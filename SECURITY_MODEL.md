@@ -2,66 +2,46 @@
 
 ## Trust boundary
 
-CellFlow is non-custodial. It may accept a signed transaction or transaction hash but never a private key.
+CellFlow is non-custodial. It accepts public transaction identity, signed transaction workflow context, application metadata and expected-state assertions. It never needs private keys, seed phrases or wallet recovery material.
 
-## Threats addressed in V1
+## Implemented controls
 
-- leaked project API keys;
-- forged webhook requests;
-- replayed API requests;
-- duplicate intent creation;
-- malformed transaction hashes/payloads;
-- SQL injection;
-- SSRF through configurable callback URLs;
-- excessive RPC response size;
-- unbounded retry loops;
-- accidental secret logging;
-- cross-tenant data access;
-- stale/incorrect internal state after restart.
+- API keys are generated with cryptographic randomness and stored only as SHA-256 hashes.
+- Every tenant-owned query includes `project_id`.
+- `(project_id, intent_id)` is enforced by PostgreSQL uniqueness.
+- External request payloads are schema validated.
+- Transaction hashes use strict 32-byte hex validation.
+- State history is append-only in ordinary application paths.
+- Execution projection updates use optimistic version checks.
+- Webhook endpoints receive independent secrets, encrypted at rest with AES-256-GCM derived from `CELLFLOW_MASTER_SECRET`.
+- Webhook requests are HMAC-SHA256 signed with timestamp/replay-window verifier support.
+- Webhook retries are durable and separate from transaction correctness.
+- Webhook redirects are not followed.
+- Private, loopback, link-local, multicast and documentation/reserved address ranges are blocked.
+- DNS is re-resolved immediately before delivery and the outgoing socket is pinned to the validated public IP while preserving TLS SNI/Host, reducing DNS-rebinding exposure.
+- RPC calls have timeouts and response-size bounds.
+- CellFlow never automatically interprets a broadcast timeout as failure/rebroadcast permission.
 
-## Required controls
-
-- hashed API keys at rest;
-- constant-time key comparison where practical;
-- HMAC webhook signatures with timestamp and replay window;
-- tenant ID included in every database access path;
-- strict URL validation for callbacks;
-- block private/loopback metadata addresses for webhooks unless explicit local development mode;
-- schema validation for all public request bodies;
-- rate limits per project;
-- structured redaction for secrets;
-- append-only state-event audit history;
-- no trust in client-provided current status;
-- server computes normalized state from RPC observations.
-
-## Webhook signature format
-
-Suggested canonical message:
+## Webhook signature
 
 ```text
-v1.<unix_timestamp>.<raw_body>
-```
-
-Header example:
-
-```text
-X-CellFlow-Signature: v1=<hex-hmac>
+canonical = v1.<unix_timestamp>.<raw_body>
+X-CellFlow-Signature: v1=<hex-hmac-sha256>
 X-CellFlow-Timestamp: <unix_timestamp>
+X-CellFlow-Event-Id: <event uuid>
+X-CellFlow-Delivery-Id: <delivery uuid>
 ```
 
-Publish verifier snippets in TypeScript.
+Use `verifyWebhookSignature()` from `@cellflow/webhooks` with a short replay window.
 
-## Data minimization
+## Remaining production review items
 
-Store only application metadata needed for operations. Metadata should have documented size limits. Do not encourage user PII in free-form metadata.
+Before handling production-value applications:
 
-## Security review gate
-
-Before independent pilot:
-
-- run dependency audit;
-- verify webhook SSRF protection;
-- run cross-tenant authorization tests;
-- document data retention;
-- document incident/revocation steps;
-- confirm no signing secrets appear in logs or DB.
+- add project-level rate limiting at the edge/API layer;
+- define retention/deletion policy;
+- add API-key rotation/revocation UI/endpoint;
+- add structured secret-redacting logger and centralized audit sink;
+- run dependency/SAST audit in CI;
+- perform an external SSRF/cross-tenant review;
+- use operator-controlled CKB RPC with an appropriate SLA.

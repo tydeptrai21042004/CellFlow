@@ -1,0 +1,11 @@
+{
+  "name": "@cellflow/reconcile",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@cellflow/assertions": "workspace:*",
+    "@cellflow/core": "workspace:*",
+    "@cellflow/db": "workspace:*"
+  }
+}

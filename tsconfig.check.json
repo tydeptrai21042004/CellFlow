@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": { "noEmit": true },
+  "include": [
+    "packages/*/src/**/*.ts",
+    "workflows/*/src/**/*.ts",
+    "apps/api/src/**/*.ts"
+  ],
+  "exclude": ["node_modules"]
+}

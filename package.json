@@ -1,0 +1,29 @@
+{
+  "name": "cellflow",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CKB-native durable transaction operations and recovery layer",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "workflows/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @cellflow/web",
+    "build": "npm run build -w @cellflow/web",
+    "start": "npm run start -w @cellflow/web",
+    "typecheck": "tsc -p tsconfig.check.json --noEmit",
+    "test": "npm run test:core && node --test tests/runtime/tree.test.mjs",
+    "test:core": "rm -rf .tmp/core && tsc -p packages/core/tsconfig.json && node --test tests/runtime/core.test.mjs",
+    "migrate": "node scripts/migrate.mjs",
+    "verify": "npm run test:core && node scripts/verify-tree.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.3"
+  },
+  "type": "module"
+}

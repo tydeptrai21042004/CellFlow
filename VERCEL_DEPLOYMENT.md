@@ -1,81 +1,48 @@
-# Vercel Deployment Specification
+# Vercel Deployment
 
-## Objective
+## Stack
 
-A CKBuilder should be able to deploy CellFlow without running Docker, Redis, a CKB node, or a permanent worker.
+- Next.js 16 on Vercel.
+- Workflow SDK (`workflow/next`) for durable per-intent reconciliation.
+- PostgreSQL/Neon as the durable source of truth.
+- Vercel Cron as a repair sweep, not primary state ownership.
+- Operator-provided CKB RPC.
 
-## Reference stack
-
-- Next.js on Vercel for UI and APIs.
-- Vercel Workflows for durable reconciliation.
-- Neon PostgreSQL for persistence.
-- User-provided CKB RPC endpoint.
-- Optional Vercel Cron for maintenance sweeps only; correctness must not depend exclusively on cron.
-
-## Required environment variables
+## Environment
 
 ```env
 DATABASE_URL=
 CKB_NETWORK=testnet
 CKB_RPC_URL=
-CELLFLOW_MASTER_SECRET=
-WEBHOOK_SIGNING_SECRET=
-NEXT_PUBLIC_APP_URL=
-```
-
-Optional:
-
-```env
 CKB_RPC_FALLBACK_URL=
-LOG_LEVEL=info
-DEFAULT_CONFIRMATION_POLICY=committed
+CELLFLOW_MASTER_SECRET=
+CRON_SECRET=
+NEXT_PUBLIC_APP_URL=
+DEFAULT_CONFIRMATION_POLICY=depth:4
 ```
 
-## Deployment flow
+`CELLFLOW_MASTER_SECRET` and `CRON_SECRET` must be different high-entropy values. The application refuses to bootstrap projects if the master secret is shorter than 32 characters.
 
-1. Fork repository.
-2. Click `Deploy with Vercel`.
-3. Provision/connect Neon.
-4. Add CKB RPC URL and secrets.
-5. Run migration step.
-6. Health check `/api/health`.
-7. Create initial project/API key from setup screen.
-8. Track a supplied testnet fixture transaction.
+## Deploy
 
-## Serverless design constraints
+1. Import the repository into Vercel and leave the project Root Directory at the monorepo root. The committed `vercel.json` builds `@cellflow/web` and publishes `apps/web/.next`.
+2. Provision/connect Neon PostgreSQL.
+3. Add environment variables.
+4. Run `npm run migrate` against the production database.
+5. Deploy the Next.js project.
+6. Open `/api/health` and `/api/health/rpc`.
+7. Open `/` and use the First deploy panel to create a project.
+8. Copy the returned API key once.
+9. Track a CKB testnet transaction.
+10. Verify the run in Vercel Workflows and export evidence.
 
-- Never depend on process memory for intent or retry state.
-- Every workflow step must be retry-safe.
-- Database writes should use unique constraints and transactions.
-- Avoid database locks across network calls.
-- Keep RPC calls outside long DB transactions.
-- Use bounded retries plus durable delayed continuation.
-- Treat deployment/restart as a normal event.
+## Durability model
 
-## Health endpoints
+The workflow function contains orchestration/sleep only. CKB/database side effects occur in workflow steps. Every reconciliation reads current PostgreSQL state before acting, and execution updates use optimistic version checks. A deploy can terminate a function instance without losing the logical transaction lifecycle.
 
-`/api/health` checks application and DB connectivity.
+`/api/internal/maintenance` is configured in `vercel.json` and processes due rows/webhooks if a workflow was not started or reached its bounded horizon.
 
-`/api/health/rpc` checks CKB RPC separately and must not make the whole dashboard unavailable if RPC is down.
+## Health
 
-`/api/health/workflows` verifies workflow registration/configuration.
-
-## Demo vs production profile
-
-### Demo
-Public testnet RPC is acceptable with a visible warning.
-
-### Production
-Require operator-controlled or contracted RPC infrastructure. The product should never claim public RPC has production SLA.
-
-## Deployment acceptance test
-
-A clean Vercel project is considered successfully deployed when a reviewer can:
-
-- open the dashboard;
-- create a project;
-- obtain API credentials;
-- track a real testnet transaction;
-- observe state transition;
-- export evidence JSON;
-- receive a signed webhook.
+- `/api/health` — application + database.
+- `/api/health/rpc` — CKB RPC separately; an RPC outage does not make the dashboard itself unavailable.
