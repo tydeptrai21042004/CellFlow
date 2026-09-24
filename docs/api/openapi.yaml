@@ -1,0 +1,234 @@
+openapi: 3.1.0
+info:
+  title: CellFlow API
+  version: 0.1.0
+  description: Durable CKB transaction lifecycle, reconciliation, confirmation and expected-Cell verification.
+servers:
+  - url: https://your-cellflow.vercel.app
+security:
+  - bearerAuth: []
+paths:
+  /api/health:
+    get:
+      security: []
+      summary: Process and database health
+      responses:
+        '200': { description: Healthy }
+        '503': { description: Database unavailable }
+  /api/health/rpc:
+    get:
+      security: []
+      summary: Check configured CKB RPC connectivity
+      responses:
+        '200': { description: RPC reachable }
+        '503': { description: RPC unavailable }
+  /api/setup:
+    post:
+      security: []
+      summary: Create a project and first API key
+      description: Requires the deployment master secret as an Authorization Bearer credential. The returned API key is shown only once.
+      parameters:
+        - in: header
+          name: Authorization
+          required: true
+          schema: { type: string, example: "Bearer <CELLFLOW_MASTER_SECRET>" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 120 }
+                network: { type: string, enum: [testnet, mainnet, devnet], default: testnet }
+                rpcUrl: { type: string, format: uri }
+                confirmationPolicy:
+                  oneOf:
+                    - type: object
+                      required: [mode]
+                      properties: { mode: { const: committed } }
+                    - type: object
+                      required: [mode, blocks]
+                      properties:
+                        mode: { const: depth }
+                        blocks: { type: integer, minimum: 1 }
+      responses:
+        '201': { description: Project created }
+        '401': { $ref: '#/components/responses/Error' }
+  /api/v1/intents:
+    get:
+      summary: List recent intents
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+      responses:
+        '200': { description: Intent list }
+        '401': { $ref: '#/components/responses/Error' }
+    post:
+      summary: Create an idempotent business intent
+      description: Reusing an intentId with identical metadata/assertions returns the existing intent. Reusing it with different input returns 409.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateIntent' }
+      responses:
+        '200': { description: Existing idempotent intent }
+        '201': { description: Intent created }
+        '409': { $ref: '#/components/responses/Error' }
+  /api/v1/intents/{intentId}:
+    get:
+      summary: Read current lifecycle state and event-derived status
+      parameters:
+        - $ref: '#/components/parameters/IntentId'
+      responses:
+        '200': { description: Intent }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/v1/intents/{intentId}/prepare:
+    post:
+      summary: Persist a deterministic transaction hash before broadcasting
+      parameters:
+        - $ref: '#/components/parameters/IntentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TxHash' }
+      responses:
+        '200': { description: Transaction prepared for tracked broadcast }
+        '409': { $ref: '#/components/responses/Error' }
+  /api/v1/intents/{intentId}/broadcasting:
+    post:
+      summary: Mark a persisted transaction as entering a broadcast attempt
+      parameters:
+        - $ref: '#/components/parameters/IntentId'
+      responses:
+        '200': { description: State updated }
+  /api/v1/intents/{intentId}/submitted:
+    post:
+      summary: Mark RPC broadcast as acknowledged and start durable reconciliation
+      parameters:
+        - $ref: '#/components/parameters/IntentId'
+      responses:
+        '200': { description: State updated }
+  /api/v1/intents/{intentId}/ambiguous:
+    post:
+      summary: Mark broadcast outcome unknown and reconcile by precomputed tx hash
+      parameters:
+        - $ref: '#/components/parameters/IntentId'
+      responses:
+        '200': { description: State updated }
+  /api/v1/intents/{intentId}/track:
+    post:
+      summary: Track an already-broadcast transaction hash
+      parameters:
+        - $ref: '#/components/parameters/IntentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TxHash' }
+      responses:
+        '200': { description: Tracking started }
+  /api/v1/intents/{intentId}/reconcile:
+    post:
+      summary: Run one immediate CKB reconciliation step
+      parameters:
+        - $ref: '#/components/parameters/IntentId'
+      responses:
+        '200': { description: Reconciliation result }
+  /api/v1/intents/{intentId}/evidence:
+    get:
+      summary: Export deterministic lifecycle evidence and SHA-256
+      parameters:
+        - $ref: '#/components/parameters/IntentId'
+      responses:
+        '200': { description: Evidence document }
+  /api/v1/webhooks:
+    get:
+      summary: List webhook endpoints
+      responses:
+        '200': { description: Endpoints }
+    post:
+      summary: Create a webhook endpoint and one-time signing secret
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties: { url: { type: string, format: uri } }
+      responses:
+        '201': { description: Webhook created }
+        '400': { $ref: '#/components/responses/Error' }
+  /api/v1/webhooks/test:
+    post:
+      summary: Queue a signed test delivery to configured webhook endpoints
+      responses:
+        '202': { description: Test delivery queued }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: CellFlow API key
+  parameters:
+    IntentId:
+      in: path
+      name: intentId
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 128 }
+  schemas:
+    TxHash:
+      type: object
+      required: [txHash]
+      properties:
+        txHash:
+          type: string
+          pattern: '^0x[0-9a-fA-F]{64}$'
+    ScriptAssertion:
+      type: object
+      properties:
+        codeHash: { type: string, pattern: '^0x[0-9a-fA-F]{64}$' }
+        hashType: { type: string, enum: [data, type, data1, data2] }
+        args: { type: string, pattern: '^0x[0-9a-fA-F]*$' }
+    ExpectedCell:
+      type: object
+      required: [outputIndex]
+      properties:
+        outputIndex: { type: integer, minimum: 0, maximum: 1024 }
+        capacity: { type: string, pattern: '^0x[0-9a-fA-F]*$' }
+        lock: { $ref: '#/components/schemas/ScriptAssertion' }
+        type:
+          oneOf:
+            - { $ref: '#/components/schemas/ScriptAssertion' }
+            - { type: 'null' }
+        data: { type: string, pattern: '^0x[0-9a-fA-F]*$' }
+    CreateIntent:
+      type: object
+      required: [intentId]
+      properties:
+        intentId: { type: string, minLength: 1, maxLength: 128 }
+        metadata: { type: object, additionalProperties: true, default: {} }
+        expectedCells:
+          type: array
+          maxItems: 32
+          items: { $ref: '#/components/schemas/ExpectedCell' }
+          default: []
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+  responses:
+    Error:
+      description: Structured CellFlow error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }

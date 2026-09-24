@@ -1,43 +1,35 @@
-# API documentation
+# CellFlow REST API
 
-## Purpose
+The V1 API is implemented by the Next.js route handlers under `apps/web/app/api`. Project endpoints use `Authorization: Bearer cf_live_...`; `/api/setup` is bootstrap-only and instead requires `x-cellflow-master-secret` to match `CELLFLOW_MASTER_SECRET`.
 
-Maintain REST and SDK contracts. Document authentication, idempotency semantics, examples, errors, pagination and versioning. Prefer generated OpenAPI plus hand-written integration guides.
+The machine-readable contract is [`openapi.yaml`](./openapi.yaml).
 
-## Required deliverables
+## Recommended transaction path
 
-- A concise public interface or responsibility statement for this folder.
-- Tests or verification appropriate to its role.
-- Documentation updated in the same change when behavior changes.
-- No hidden dependency on local process state.
-- Clear error behavior and structured logs where runtime code is involved.
+For a CCC application, prefer the `@cellflow/ccc` adapter rather than manually calling these endpoints:
 
-## Implementation rules
+1. Create an idempotent business intent.
+2. Sign/prepare the CKB transaction.
+3. Compute and persist the deterministic transaction hash with `/prepare` **before broadcast**.
+4. Mark `/broadcasting` and call the CKB RPC.
+5. On acknowledged broadcast, call `/submitted`.
+6. On timeout/network ambiguity, call `/ambiguous`; do **not** blindly rebroadcast.
+7. CellFlow reconciles the stored hash until committed/confirmed/rejected and verifies optional expected Cells.
 
-1. Keep the folder's responsibility narrow; move reusable logic into the correct package.
-2. Do not duplicate state-machine rules; import/use the canonical core model.
-3. Validate external data before it reaches domain logic.
-4. Preserve tenant/project isolation in every persistence or API path.
-5. Do not add Fiber/RGB++/AI-agent functionality to solve a local problem unless the project scope is formally expanded.
-6. Prefer deterministic identifiers, explicit timestamps and append-only events for operational history.
-7. Any retry path must explain idempotency and terminal behavior.
+For already-broadcast transactions, use `/track` instead.
 
-## Definition of done
+## Idempotency
 
-A change in this folder is complete only when:
+`intentId` is unique within a project. A second create request with the same `intentId`, metadata and expected-Cell assertions is safe and returns the existing object. Reusing the identifier with different input returns `409 INTENT_CONFLICT`.
 
-- its behavior is testable;
-- failures are observable;
-- restart/redeploy behavior is safe where applicable;
-- documentation matches the implementation;
-- there is a reviewer-verifiable path or example;
-- no secret/private signing material is introduced.
+## Status model
 
-## Questions to answer during implementation
+The public response contains a derived `status` plus independent `submissionStatus`, `chainStatus`, and `workflowStatus`. This prevents RPC observations such as `UNKNOWN` from being confused with broadcast outcome or durable workflow state.
 
-- What is the source of truth?
-- What happens if the process dies immediately after this operation?
-- What happens if the same request is executed twice?
-- What happens if CKB RPC is temporarily unavailable?
-- Can this behavior be proven in CI or with an evidence artifact?
-- Is this functionality already better owned by CCC, Cellora, Vercel, Neon or the consuming application?
+## Evidence
+
+`GET /api/v1/intents/{intentId}/evidence` returns the lifecycle snapshot, append-only state events and a deterministic SHA-256 over a canonical JSON representation. Evidence is an audit artifact, not a consensus proof.
+
+## Webhooks
+
+Each webhook receives its own `whsec_...` signing secret. Delivery is HMAC signed with timestamp and delivery/event identifiers, retried with backoff, DNS-resolved before connect, and does not follow redirects. Keep the secret on the receiver and deduplicate by delivery/event ID.

@@ -1,43 +1,7 @@
-# Webhook package
+# `@cellflow/webhooks`
 
-## Purpose
+Signed, retryable webhook delivery with SSRF controls.
 
-Canonicalize webhook payloads, signing, verification, retry classification and delivery metadata. Implement SSRF protections in the service layer. Provide copy-paste verifier examples.
+Each endpoint has its own generated secret, encrypted at rest with `CELLFLOW_MASTER_SECRET`. Deliveries include timestamp/event/delivery IDs and an HMAC-SHA256 signature. The sender validates DNS results, rejects private/loopback/link-local/metadata targets, connects to a validated IP while preserving TLS SNI/Host, refuses redirects, limits response size and retries with bounded backoff.
 
-## Required deliverables
-
-- A concise public interface or responsibility statement for this folder.
-- Tests or verification appropriate to its role.
-- Documentation updated in the same change when behavior changes.
-- No hidden dependency on local process state.
-- Clear error behavior and structured logs where runtime code is involved.
-
-## Implementation rules
-
-1. Keep the folder's responsibility narrow; move reusable logic into the correct package.
-2. Do not duplicate state-machine rules; import/use the canonical core model.
-3. Validate external data before it reaches domain logic.
-4. Preserve tenant/project isolation in every persistence or API path.
-5. Do not add Fiber/RGB++/AI-agent functionality to solve a local problem unless the project scope is formally expanded.
-6. Prefer deterministic identifiers, explicit timestamps and append-only events for operational history.
-7. Any retry path must explain idempotency and terminal behavior.
-
-## Definition of done
-
-A change in this folder is complete only when:
-
-- its behavior is testable;
-- failures are observable;
-- restart/redeploy behavior is safe where applicable;
-- documentation matches the implementation;
-- there is a reviewer-verifiable path or example;
-- no secret/private signing material is introduced.
-
-## Questions to answer during implementation
-
-- What is the source of truth?
-- What happens if the process dies immediately after this operation?
-- What happens if the same request is executed twice?
-- What happens if CKB RPC is temporarily unavailable?
-- Can this behavior be proven in CI or with an evidence artifact?
-- Is this functionality already better owned by CCC, Cellora, Vercel, Neon or the consuming application?
+The package deliberately does not use a global signing secret, and production HTTP destinations are rejected.

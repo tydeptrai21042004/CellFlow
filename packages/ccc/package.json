@@ -1,0 +1,10 @@
+{
+  "name": "@cellflow/ccc",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@ckb-ccc/core": "1.19.1",
+    "@cellflow/core": "workspace:*"
+  }
+}

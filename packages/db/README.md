@@ -1,43 +1,14 @@
-# Persistence package
+# `@cellflow/db`
 
-## Purpose
+PostgreSQL is CellFlow's durable application source of truth. `migrations/001_init.sql` creates project/API-key records, idempotent intents, versioned executions, append-only state events, per-endpoint webhook secrets/deliveries and evidence-export metadata.
 
-Own schema, migrations, repositories and transaction helpers. PostgreSQL is the V1 reference. Enforce idempotency in the database, not application memory. Expose repository interfaces rather than raw ORM everywhere.
+Important invariants include:
 
-## Required deliverables
+- `UNIQUE(project_id, intent_id)` for business idempotency;
+- a project cannot bind the same transaction hash to unrelated executions;
+- execution updates use an optimistic `version` field;
+- chain observation, submission state and workflow state are stored separately;
+- committed block hash/height and confirmation count remain available for reorg detection;
+- reconciliation timestamps/attempts survive serverless restarts.
 
-- A concise public interface or responsibility statement for this folder.
-- Tests or verification appropriate to its role.
-- Documentation updated in the same change when behavior changes.
-- No hidden dependency on local process state.
-- Clear error behavior and structured logs where runtime code is involved.
-
-## Implementation rules
-
-1. Keep the folder's responsibility narrow; move reusable logic into the correct package.
-2. Do not duplicate state-machine rules; import/use the canonical core model.
-3. Validate external data before it reaches domain logic.
-4. Preserve tenant/project isolation in every persistence or API path.
-5. Do not add Fiber/RGB++/AI-agent functionality to solve a local problem unless the project scope is formally expanded.
-6. Prefer deterministic identifiers, explicit timestamps and append-only events for operational history.
-7. Any retry path must explain idempotency and terminal behavior.
-
-## Definition of done
-
-A change in this folder is complete only when:
-
-- its behavior is testable;
-- failures are observable;
-- restart/redeploy behavior is safe where applicable;
-- documentation matches the implementation;
-- there is a reviewer-verifiable path or example;
-- no secret/private signing material is introduced.
-
-## Questions to answer during implementation
-
-- What is the source of truth?
-- What happens if the process dies immediately after this operation?
-- What happens if the same request is executed twice?
-- What happens if CKB RPC is temporarily unavailable?
-- Can this behavior be proven in CI or with an evidence artifact?
-- Is this functionality already better owned by CCC, Cellora, Vercel, Neon or the consuming application?
+Run `npm run migrate` from the repository root after configuring `DATABASE_URL`.

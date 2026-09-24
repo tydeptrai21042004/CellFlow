@@ -1,43 +1,28 @@
-# CCC integration package
+# `@cellflow/ccc`
 
-## Purpose
+CCC integration for the failure window CellFlow is designed to solve.
 
-Provide typed client helpers for CKB/CCC applications. Start with tracking a transaction hash and waiting/querying an intent. Add signed-transaction submission only after serialization and security behavior are stable. Never request a private key.
+```ts
+import { createCellFlow, prepareTrackedTransaction } from "@cellflow/ccc";
 
-## Required deliverables
+const flow = createCellFlow({
+  endpoint: process.env.CELLFLOW_URL!,
+  apiKey: process.env.CELLFLOW_API_KEY!,
+});
 
-- A concise public interface or responsibility statement for this folder.
-- Tests or verification appropriate to its role.
-- Documentation updated in the same change when behavior changes.
-- No hidden dependency on local process state.
-- Clear error behavior and structured logs where runtime code is involved.
+const tracked = await prepareTrackedTransaction({
+  signer,
+  transaction: tx,
+  flow,
+  intentId: `service-transfer:${orderId}`,
+  expectedCells: [{ outputIndex: 0, lock: { args: bobLockArgs } }],
+});
 
-## Implementation rules
+console.log("known before broadcast", tracked.txHash);
+await tracked.broadcast();
+const finalState = await flow.wait(`service-transfer:${orderId}`, { until: "confirmed" });
+```
 
-1. Keep the folder's responsibility narrow; move reusable logic into the correct package.
-2. Do not duplicate state-machine rules; import/use the canonical core model.
-3. Validate external data before it reaches domain logic.
-4. Preserve tenant/project isolation in every persistence or API path.
-5. Do not add Fiber/RGB++/AI-agent functionality to solve a local problem unless the project scope is formally expanded.
-6. Prefer deterministic identifiers, explicit timestamps and append-only events for operational history.
-7. Any retry path must explain idempotency and terminal behavior.
+`prepareTrackedTransaction()` asks CCC to prepare/sign the transaction and calls `Transaction.hash()` before `sendTransaction()`. The hash is persisted first. If broadcast throws after the node may already have accepted the transaction, the adapter records `SUBMISSION_UNKNOWN` and raises `AmbiguousSubmissionError`; it does not automatically rebroadcast.
 
-## Definition of done
-
-A change in this folder is complete only when:
-
-- its behavior is testable;
-- failures are observable;
-- restart/redeploy behavior is safe where applicable;
-- documentation matches the implementation;
-- there is a reviewer-verifiable path or example;
-- no secret/private signing material is introduced.
-
-## Questions to answer during implementation
-
-- What is the source of truth?
-- What happens if the process dies immediately after this operation?
-- What happens if the same request is executed twice?
-- What happens if CKB RPC is temporarily unavailable?
-- Can this behavior be proven in CI or with an evidence artifact?
-- Is this functionality already better owned by CCC, Cellora, Vercel, Neon or the consuming application?
+This package never requests or stores a private key. Signing remains inside the application's CCC signer/wallet boundary.
