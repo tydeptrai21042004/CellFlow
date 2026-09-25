@@ -47,7 +47,7 @@ Run:
 npm run migrate
 ```
 
-Migration `003_production_readiness.sql` adds scoped/expiring keys, operational indexes, and project evidence exports.
+Migration `003_production_readiness.sql` adds scoped/expiring keys and project evidence exports. Migration `004_operational_scalability.sql` adds durable per-project RPC genesis identity plus pagination/worker-health indexes. `/api/ready` now verifies that migration 004 is applied.
 
 ## Release gate
 

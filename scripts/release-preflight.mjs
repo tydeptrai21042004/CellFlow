@@ -21,6 +21,7 @@ add("dependency-lockfile", lockfile, "blocker", lockfile ? "package-lock.json pr
 
 for (const path of [
   "packages/db/migrations/003_production_readiness.sql",
+  "packages/db/migrations/004_operational_scalability.sql",
   "SECURITY.md",
   "docs/operations/RUNBOOK.md",
   "docs/funding/REVIEWER_VERIFICATION.md",
@@ -50,6 +51,7 @@ if (envExampleExists) {
   for (const key of [
     "DATABASE_URL", "CKB_NETWORK", "CKB_RPC_URL", "CKB_EXPECTED_GENESIS_HASH",
     "CELLFLOW_ENCRYPTION_KEY", "CELLFLOW_BOOTSTRAP_TOKEN", "CELLFLOW_SETUP_ENABLED", "CRON_SECRET",
+    "CELLFLOW_RECONCILE_CONCURRENCY", "CELLFLOW_WEBHOOK_CONCURRENCY", "CELLFLOW_WEBHOOK_MAX_ATTEMPTS",
   ]) add(`env-template:${key}`, envExample.includes(`${key}=`), "blocker", `${key} documented`);
 }
 

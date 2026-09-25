@@ -362,3 +362,6 @@ tbody tr:hover td { background: rgba(255,255,255,.012); }
   .console-subnav a { flex: 0 0 auto; }
   .provisioning-card { grid-template-columns: 1fr; }
 }
+
+.table-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 14px; color: var(--muted); font-size: 12px; }
+@media (max-width: 720px) { .table-footer { align-items: flex-start; flex-direction: column; } }

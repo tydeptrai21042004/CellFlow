@@ -3,7 +3,7 @@ import { CkbRpcClient, parseRpcUrls } from "@cellflow/reconcile";
 
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const urls = parseRpcUrls(
       process.env.CKB_RPC_URL,
@@ -21,6 +21,6 @@ export async function GET() {
       tip: { number: tip.number ?? null, hash: tip.hash ?? null },
     });
   } catch (error) {
-    return errorResponse(error);
+    return errorResponse(error, request);
   }
 }

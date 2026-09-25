@@ -31,9 +31,9 @@ paths:
       security: []
       summary: Deployment readiness
       description: >-
-        Checks database access, runtime-secret configuration, CKB RPC reachability,
-        configured network identity, optional genesis pinning, production setup lock,
-        and RPC fallback topology. A liveness endpoint is not a substitute for this
+        Checks database access, latest required schema migration, runtime-secret
+        configuration, CKB RPC reachability, configured network identity, optional
+        genesis pinning, production setup lock, and RPC fallback topology. A liveness endpoint is not a substitute for this
         readiness endpoint.
       responses:
         '200': { description: Ready; warnings may still be present }
@@ -46,7 +46,9 @@ paths:
         Requires CELLFLOW_BOOTSTRAP_TOKEN as an Authorization Bearer credential.
         In production the route is disabled unless CELLFLOW_SETUP_ENABLED=true.
         Disable setup immediately after provisioning. The first key receives
-        read/write/admin scope and its secret is returned once.
+        read/write/admin scope and its secret is returned once. When a custom RPC
+        is supplied, CellFlow verifies and persists that endpoint's genesis hash
+        as durable project chain identity.
       parameters:
         - in: header
           name: Authorization
@@ -87,8 +89,13 @@ paths:
         - in: query
           name: limit
           schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+        - in: query
+          name: cursor
+          description: Opaque keyset cursor returned as nextCursor by the previous page.
+          schema: { type: string, maxLength: 512 }
       responses:
-        '200': { description: Intent list }
+        '200':
+          description: Intent page with an opaque nextCursor, or null when exhausted.
         '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
     post:
@@ -207,11 +214,19 @@ paths:
   /api/v1/intents/{intentId}/evidence:
     get:
       summary: Export deterministic lifecycle evidence and SHA-256
-      description: Requires read scope.
+      description: Requires read scope and does not mutate durable state.
       parameters:
         - $ref: '#/components/parameters/IntentId'
       responses:
-        '200': { description: Intent evidence document }
+        '200': { description: Non-persisted intent evidence document }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      summary: Persist an immutable evidence export record
+      description: Requires admin scope because this writes durable audit state.
+      parameters:
+        - $ref: '#/components/parameters/IntentId'
+      responses:
+        '201': { description: Persisted intent evidence with export ID and timestamp }
         '403': { $ref: '#/components/responses/Error' }
 
   /api/v1/metrics:

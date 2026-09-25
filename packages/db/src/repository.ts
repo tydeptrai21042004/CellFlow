@@ -9,6 +9,8 @@ import type {
   EvidenceExportRecord,
   ExecutionRecord,
   IntentAggregate,
+  IntentListCursor,
+  IntentListPage,
   IntentRecord,
   OperationalHealthRecord,
   ProjectRecord,
@@ -42,6 +44,7 @@ function mapProject(row: Record<string, unknown>): ProjectRecord {
     name: String(row.name),
     network: row.network as ProjectRecord["network"],
     rpcUrl: row.rpc_url ? String(row.rpc_url) : null,
+    rpcGenesisHash: row.rpc_genesis_hash ? String(row.rpc_genesis_hash) : null,
     confirmationPolicy: row.confirmation_policy as ConfirmationPolicy,
     createdAt: iso(row.created_at as Date | string),
   };
@@ -116,6 +119,15 @@ export class CellFlowRepository {
     return Number(rows[0]?.ok) === 1;
   }
 
+  async hasMigration(version: string): Promise<boolean> {
+    try {
+      const rows = await this.sql`select exists(select 1 from schema_migrations where version = ${version}) as applied`;
+      return Boolean(rows[0]?.applied);
+    } catch {
+      return false;
+    }
+  }
+
   private async insertEventAndOutbox(tx: TransactionSql, input: {
     projectId: string;
     intentRowId: string;
@@ -176,6 +188,7 @@ export class CellFlowRepository {
     name: string;
     network: ProjectRecord["network"];
     rpcUrl?: string | null;
+    rpcGenesisHash?: string | null;
     confirmationPolicy: ConfirmationPolicy;
     apiKeyId: string;
     apiKeyPrefix: string;
@@ -184,8 +197,8 @@ export class CellFlowRepository {
     const projectId = randomUUID();
     return this.sql.begin(async (tx) => {
       const projectRows = await tx`
-        insert into projects (id, name, network, rpc_url, confirmation_policy)
-        values (${projectId}, ${input.name}, ${input.network}, ${input.rpcUrl ?? null}, ${tx.json(toJsonValue(input.confirmationPolicy))})
+        insert into projects (id, name, network, rpc_url, rpc_genesis_hash, confirmation_policy)
+        values (${projectId}, ${input.name}, ${input.network}, ${input.rpcUrl ?? null}, ${input.rpcGenesisHash ?? null}, ${tx.json(toJsonValue(input.confirmationPolicy))})
         returning *
       `;
       await tx`
@@ -210,7 +223,7 @@ export class CellFlowRepository {
     `;
     const row = rows[0];
     if (!row) return null;
-    void this.sql`update api_keys set last_used_at = now() where key_hash = ${hash}`;
+    void this.sql`update api_keys set last_used_at = now() where key_hash = ${hash}`.catch(() => undefined);
     return {
       project: mapProject(row),
       key: {
@@ -466,19 +479,40 @@ export class CellFlowRepository {
     };
   }
 
-  async listIntents(projectId: string, limit = 100): Promise<IntentAggregate[]> {
-    const rows = await this.sql`
-      select
-        i.id as i_id, i.project_id as i_project_id, i.intent_id as i_intent_id,
-        i.metadata as i_metadata, i.expected_cells as i_expected_cells,
-        i.created_at as i_created_at, i.updated_at as i_updated_at,
-        e.*
-      from intents i join executions e on e.intent_row_id = i.id
-      where i.project_id = ${projectId}
-      order by i.created_at desc
-      limit ${Math.min(Math.max(limit, 1), 200)}
-    `;
-    return rows.map((row) => ({
+  async listIntentsPage(
+    projectId: string,
+    limit = 100,
+    cursor?: IntentListCursor | null,
+  ): Promise<IntentListPage> {
+    const pageSize = Math.min(Math.max(Math.floor(limit), 1), 200);
+    const fetchSize = pageSize + 1;
+    const rows = cursor
+      ? await this.sql`
+          select
+            i.id as i_id, i.project_id as i_project_id, i.intent_id as i_intent_id,
+            i.metadata as i_metadata, i.expected_cells as i_expected_cells,
+            i.created_at as i_created_at, i.updated_at as i_updated_at,
+            e.*
+          from intents i join executions e on e.intent_row_id = i.id
+          where i.project_id = ${projectId}
+            and (i.created_at, i.id) < (${new Date(cursor.createdAt)}, ${cursor.id})
+          order by i.created_at desc, i.id desc
+          limit ${fetchSize}
+        `
+      : await this.sql`
+          select
+            i.id as i_id, i.project_id as i_project_id, i.intent_id as i_intent_id,
+            i.metadata as i_metadata, i.expected_cells as i_expected_cells,
+            i.created_at as i_created_at, i.updated_at as i_updated_at,
+            e.*
+          from intents i join executions e on e.intent_row_id = i.id
+          where i.project_id = ${projectId}
+          order by i.created_at desc, i.id desc
+          limit ${fetchSize}
+        `;
+    const hasMore = rows.length > pageSize;
+    const visible = hasMore ? rows.slice(0, pageSize) : rows;
+    const items = visible.map((row) => ({
       intent: mapIntent({
         id: row.i_id, project_id: row.i_project_id, intent_id: row.i_intent_id,
         metadata: row.i_metadata, expected_cells: row.i_expected_cells,
@@ -486,6 +520,15 @@ export class CellFlowRepository {
       }),
       execution: mapExecution(row),
     }));
+    const last = items.at(-1);
+    return {
+      items,
+      nextCursor: hasMore && last ? { createdAt: last.intent.createdAt, id: last.intent.id } : null,
+    };
+  }
+
+  async listIntents(projectId: string, limit = 100): Promise<IntentAggregate[]> {
+    return (await this.listIntentsPage(projectId, limit)).items;
   }
 
   async attachTransaction(input: {
@@ -760,6 +803,17 @@ export class CellFlowRepository {
     return result;
   }
 
+  async renewReconcileLease(executionId: string, leaseId: string, leaseSeconds = 60): Promise<boolean> {
+    const seconds = Math.min(Math.max(Math.floor(leaseSeconds), 15), 3600);
+    const rows = await this.sql`
+      update executions
+      set reconcile_lease_until = now() + (${seconds} * interval '1 second')
+      where id = ${executionId} and reconcile_lease_id = ${leaseId}
+      returning id
+    `;
+    return rows.length === 1;
+  }
+
   async releaseReconcileLease(executionId: string, leaseId: string): Promise<void> {
     await this.sql`
       update executions set reconcile_lease_id = null, reconcile_lease_until = null
@@ -918,6 +972,64 @@ export class CellFlowRepository {
         if (updated[0]) result.push(updated[0]);
       }
       return result;
+    });
+    return rows.map((row) => ({
+      id: String(row.id), projectId: String(row.project_id), endpointId: String(row.endpoint_id),
+      eventId: String(row.event_id), eventType: String(row.event_type), payload: row.payload,
+      attemptCount: Number(row.attempt_count), status: String(row.status),
+      nextAttemptAt: row.next_attempt_at ? iso(row.next_attempt_at as Date | string) : null,
+      leaseOwner: row.lease_owner ? String(row.lease_owner) : null,
+      leaseUntil: row.lease_until ? iso(row.lease_until as Date | string) : null,
+    }));
+  }
+
+  async renewWebhookDeliveryLease(deliveryId: string, leaseOwner: string, leaseSeconds = 60): Promise<boolean> {
+    const seconds = Math.min(Math.max(Math.floor(leaseSeconds), 15), 900);
+    const rows = await this.sql`
+      update webhook_deliveries
+      set lease_until = now() + (${seconds} * interval '1 second'), updated_at = now()
+      where id = ${deliveryId} and lease_owner = ${leaseOwner} and status = 'CLAIMED'
+      returning id
+    `;
+    return rows.length === 1;
+  }
+
+  async releaseWebhookDeliveryLease(deliveryId: string, leaseOwner: string): Promise<void> {
+    await this.sql`
+      update webhook_deliveries
+      set status = 'RETRY', lease_owner = null, lease_until = null,
+          next_attempt_at = coalesce(next_attempt_at, now()), updated_at = now()
+      where id = ${deliveryId} and lease_owner = ${leaseOwner} and status = 'CLAIMED'
+    `;
+  }
+
+  async claimWebhookDeliveriesForEvent(
+    projectId: string,
+    eventId: string,
+    leaseOwner: string,
+    leaseSeconds = 45,
+  ): Promise<WebhookDeliveryRecord[]> {
+    const seconds = Math.min(Math.max(Math.floor(leaseSeconds), 15), 300);
+    const rows = await this.sql.begin(async (tx) => {
+      const candidates = await tx`
+        select id from webhook_deliveries
+        where project_id = ${projectId} and event_id = ${eventId}
+          and status in ('PENDING','RETRY')
+          and coalesce(next_attempt_at, now()) <= now()
+          and (lease_until is null or lease_until < now())
+        order by id asc for update skip locked
+      `;
+      const claimed = [];
+      for (const candidate of candidates) {
+        const updated = await tx`
+          update webhook_deliveries
+          set status = 'CLAIMED', lease_owner = ${leaseOwner},
+              lease_until = now() + (${seconds} * interval '1 second'), updated_at = now()
+          where id = ${String(candidate.id)} returning *
+        `;
+        if (updated[0]) claimed.push(updated[0]);
+      }
+      return claimed;
     });
     return rows.map((row) => ({
       id: String(row.id), projectId: String(row.project_id), endpointId: String(row.endpoint_id),

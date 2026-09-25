@@ -16,16 +16,16 @@ This repository now contains a runnable implementation rather than only the orig
 - configurable confirmation policy (`committed` or `depth:N`);
 - explicit reorg state rather than treating `COMMITTED` as permanently terminal;
 - Vercel Workflow SDK durable reconciliation loop;
-- Vercel Cron repair sweep as a secondary safety mechanism, with failure-isolated reconcile/webhook/cleanup tasks;
+- Vercel Cron repair sweep as a secondary safety mechanism, with failure-isolated, bounded reconcile/webhook/cleanup tasks;
 - CCC integration that calculates `tx.hash()` and persists it **before broadcast**;
 - ambiguous-submit handling without automatic duplicate rebroadcast;
 - expected-Cell assertions for output index/capacity/lock/type/data with `created` and current `live` modes;
 - atomic state/event/webhook outbox writes, leased webhook retries, encrypted per-endpoint secrets and DNS-pinned SSRF protection;
 - project/API-key bootstrap flow with separate bootstrap and encryption secrets plus DB-backed rate limiting;
 - separated product surfaces: public overview (`/`), authenticated/live operator console (`/console`), isolated local-only walkthrough (`/demo`), and one-time provisioning (`/console/setup`);
-- production-style operations console with DB/RPC/readiness health, RPC latency, project-wide KPI aggregates, search/filtering, intent audit drawer and optional auto-refresh;
+- production-style operations console with DB/RPC/readiness health, RPC latency, project-wide KPI aggregates, keyset-paginated intent history, search/filtering, intent audit drawer and optional auto-refresh;
 - persisted/deduplicated deterministic JSON evidence endpoint;
-- optimistic concurrency retry, reconciliation leases and deduplicated durable Workflow starts;
+- optimistic concurrency retry, renewable reconciliation/webhook leases, bounded worker concurrency and deduplicated durable Workflow starts;
 - zero-dependency `cellflow` operator CLI;
 - interactive local-only SkillPass lifecycle example with REST/CCC integration snippets;
 - API-key and signed-webhook management UI, including webhook delivery counters and non-destructive endpoint disable;
@@ -34,13 +34,13 @@ This repository now contains a runnable implementation rather than only the orig
 - multi-endpoint CKB RPC failover via primary, single fallback, or comma-separated fallback lists;
 - least-privilege API keys with `read` / `write` / `admin` scopes and optional expiry;
 - per-process RPC circuit breaking so unhealthy endpoints cool down instead of being hammered on every observation;
-- deployment readiness checks that validate database, secrets, RPC reachability, expected CKB network identity, optional pinned genesis hash, and production setup lock;
+- deployment readiness checks that validate database, applied schema migration, secrets, RPC reachability, expected CKB network identity, optional pinned genesis hash, and production setup lock;
 - operational backlog metrics for due/leased reconciliation, stale intents, webhook queues, API-key expiry, and last event activity;
 - retryable webhook dead letters from both API and operations UI;
 - machine-readable project-level evidence exports for reviewer/audit snapshots without exposing API-key material;
-- security headers, request correlation IDs, structured server-side error logging, and no-store/no-index API responses;
+- security headers, browser/CLI request correlation IDs, structured server-side error logging, and no-store/no-index API responses;
 - reproducible-release guardrails and a CI contract that requires a committed dependency lockfile before release;
-- 67 deterministic lifecycle, reorg, assertion, hardening, stability, production-readiness, UI-safety, route-separation and deployment-contract tests.
+- 81 deterministic lifecycle, reorg, assertion, hardening, stability, production-readiness, operational-scalability, UI-safety, route-separation and deployment-contract tests.
 
 ## Production hardening added September 25, 2026
 
@@ -58,6 +58,19 @@ V0.3 keeps the same non-custodial transaction model and adds a production-orient
 - all API failures carry request IDs, and the web layer emits defensive browser/security headers.
 
 See `PRODUCTION_READINESS_V0.3.md`, `SECURITY.md`, `docs/operations/RUNBOOK.md`, and `docs/funding/REVIEWER_VERIFICATION.md`.
+
+### Operational reliability and scale pass
+
+The latest pass keeps the V0.3 product boundary but strengthens non-security production behavior:
+
+- verified genesis identity from a custom RPC is persisted on the project and reused during later reconciliation;
+- intent history uses opaque keyset pagination with a supporting `(project_id, created_at, id)` index instead of relying on a fixed recent-row window;
+- reconciliation and webhook workers renew leases per item and run with bounded concurrency, reducing duplicate work when a batch takes longer than expected;
+- the daily Vercel maintenance endpoint is intentionally a small repair sweep so it stays within serverless execution limits;
+- webhook retries honor bounded `Retry-After` guidance and have a configurable total-attempt budget;
+- readiness checks the latest required schema migration, and liveness returns HTTP 503 if the database is unhealthy;
+- browser and CLI calls carry request correlation IDs, and the CLI now includes readiness/operations/webhook/project-evidence diagnostics.
+
 
 ## Architecture
 
@@ -190,7 +203,7 @@ This repository is a **production candidate**, not a claim of externally proven 
 
 1. generate and commit `package-lock.json` with the pinned package versions in this tree;
 2. use `npm ci`, then run `npm test`, `npm run typecheck`, and `npm run build` in a network-enabled CI runner;
-3. apply migrations through `003_production_readiness.sql` to a staging database and exercise backup/restore;
+3. apply migrations through `004_operational_scalability.sql` to a staging database and exercise backup/restore;
 4. pin `CKB_EXPECTED_GENESIS_HASH`, configure at least two independently operated production RPC endpoints, and keep setup disabled after bootstrap;
 5. complete a real CKB testnet ambiguity/reorg/recovery exercise plus expected-Cell verification;
 6. rotate bootstrap/API/webhook/encryption credentials and perform an external security review before mainnet.

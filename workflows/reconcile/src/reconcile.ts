@@ -129,7 +129,7 @@ async function reconcileIntentOnce(
         : undefined,
       {
         chain: expectedChain(project.network),
-        genesisHash: process.env.CKB_EXPECTED_GENESIS_HASH ?? null,
+        genesisHash: project.rpcGenesisHash ?? process.env.CKB_EXPECTED_GENESIS_HASH ?? null,
       },
     );
   } catch (error) {
@@ -251,16 +251,73 @@ export async function reconcileIntent(
   throw new Error("Reconciliation concurrency retry exhausted");
 }
 
+function boundedInteger(value: string | undefined, fallback: number, min: number, max: number): number {
+  const parsed = Number(value ?? "");
+  return Number.isFinite(parsed) ? Math.min(Math.max(Math.floor(parsed), min), max) : fallback;
+}
+
+function reconcileConcurrency(): number {
+  return boundedInteger(process.env.CELLFLOW_RECONCILE_CONCURRENCY, 4, 1, 8);
+}
+
+function reconcileItemLeaseSeconds(): number {
+  const rpcTimeoutMs = boundedInteger(process.env.CKB_RPC_TIMEOUT_MS, 10_000, 1_000, 30_000);
+  // A committed observation may need identity, transaction, canonicality, header,
+  // tip and assertion RPCs. Keep the lease comfortably beyond that upper bound.
+  return Math.min(900, Math.max(120, Math.ceil((rpcTimeoutMs * 7) / 1000) + 30));
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      const item = items[index];
+      if (item !== undefined) await worker(item);
+    }
+  });
+  await Promise.all(runners);
+}
+
 export async function reconcileDue(limit = 25): Promise<ReconcileResult[]> {
   const repository = new CellFlowRepository();
   const leaseId = randomUUID();
-  const due = await repository.claimDueExecutions(limit, leaseId, 75);
-  const results: ReconcileResult[] = [];
-  for (const aggregate of due) {
+  const concurrency = reconcileConcurrency();
+  const itemLeaseSeconds = reconcileItemLeaseSeconds();
+  const boundedLimit = Math.min(Math.max(Math.floor(limit), 1), 100);
+  // Claimed rows wait in-memory before their worker starts. Cover that queue time,
+  // then renew each row immediately before doing RPC work.
+  const initialLeaseSeconds = Math.min(
+    3600,
+    itemLeaseSeconds * Math.max(1, Math.ceil(boundedLimit / concurrency)),
+  );
+  const due = await repository.claimDueExecutions(boundedLimit, leaseId, initialLeaseSeconds);
+  const results: ReconcileResult[] = new Array(due.length);
+
+  await runWithConcurrency(due.map((aggregate, index) => ({ aggregate, index })), concurrency, async ({ aggregate, index }) => {
     try {
-      results.push(await reconcileIntent(aggregate, repository));
+      const renewed = await repository.renewReconcileLease(aggregate.execution.id, leaseId, itemLeaseSeconds);
+      if (!renewed) {
+        results[index] = {
+          intentId: aggregate.intent.intentId,
+          txHash: aggregate.execution.txHash,
+          changed: false,
+          status: "LEASE_LOST",
+          assertionStatus: aggregate.execution.assertionStatus,
+          terminal: false,
+          nextDelayMs: null,
+          error: "Reconciliation lease was lost before work started",
+        };
+        return;
+      }
+      results[index] = await reconcileIntent(aggregate, repository);
     } catch (error) {
-      results.push({
+      results[index] = {
         intentId: aggregate.intent.intentId,
         txHash: aggregate.execution.txHash,
         changed: false,
@@ -269,10 +326,11 @@ export async function reconcileDue(limit = 25): Promise<ReconcileResult[]> {
         terminal: false,
         nextDelayMs: null,
         error: error instanceof Error ? error.message : "Reconciliation worker failed",
-      });
+      };
     } finally {
       await repository.releaseReconcileLease(aggregate.execution.id, leaseId).catch(() => undefined);
     }
-  }
-  return results;
+  });
+
+  return results.filter((item): item is ReconcileResult => Boolean(item));
 }

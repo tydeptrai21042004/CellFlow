@@ -10,6 +10,6 @@ export async function POST(request: Request) {
     const retried = await service.retryWebhookFailures(project, input.endpointId);
     return Response.json({ retried });
   } catch (error) {
-    return errorResponse(error);
+    return errorResponse(error, request);
   }
 }

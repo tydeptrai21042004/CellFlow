@@ -11,6 +11,6 @@ export async function POST(request: Request, context: { params: Promise<{ intent
     const intent = await service.reconcile(project, intentId);
     return Response.json({ intent });
   } catch (error) {
-    return errorResponse(error);
+    return errorResponse(error, request);
   }
 }

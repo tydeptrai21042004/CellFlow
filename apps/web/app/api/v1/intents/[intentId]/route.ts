@@ -10,6 +10,6 @@ export async function GET(request: Request, context: { params: Promise<{ intentI
     const intent = await service.intentDetail(project, intentId);
     return Response.json({ intent });
   } catch (error) {
-    return errorResponse(error);
+    return errorResponse(error, request);
   }
 }

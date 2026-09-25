@@ -22,4 +22,4 @@ Keep four different trust surfaces separate so reviewers and operators cannot mi
 
 ## Verification
 
-`npm test` includes route-boundary regressions and passes 67 deterministic tests in this source tree. A clean dependency-resolved Next.js build still requires a network-enabled environment and a committed lockfile before release.
+`npm test` includes route-boundary regressions and passes 81 deterministic tests in this source tree. A clean dependency-resolved Next.js build still requires a network-enabled environment and a committed lockfile before release.

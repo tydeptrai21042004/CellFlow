@@ -32,7 +32,7 @@ CellFlow is an implemented CKB-focused transaction-operations layer with durable
 - Core lifecycle/reorg suite: **22 passing**.
 - Cell assertion suite: **11 passing**.
 - Runtime/hardening/UI/stability/production-readiness suite: **29 passing**.
-- Total deterministic suite: **65/65 passing**.
+- Total deterministic suite: **81/81 passing** after the operational reliability/scalability pass.
 
 ## Release gates that still require a networked/staging environment
 
@@ -55,3 +55,8 @@ Before a public production/mainnet release:
 - One independent external integration beyond the reference application.
 - 30-day operational metrics: tracked operations, recovery events, webhook retry/success rate, reconciliation backlog, and manual-intervention count.
 - Public security-review findings and remediation status when available.
+
+
+## Latest operational upgrade
+
+Migration `004_operational_scalability.sql` adds durable per-project RPC genesis identity and indexes for keyset intent pagination, stale-observation queries, and webhook due-work scans. Worker leases are renewable and batch execution uses bounded concurrency.

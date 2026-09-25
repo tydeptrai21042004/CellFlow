@@ -3,20 +3,24 @@ export async function jsonRequest<T = Record<string, unknown>>(
   apiKey?: string,
   init: RequestInit = {},
 ): Promise<T> {
+  const requestId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const response = await fetch(path, {
     ...init,
     headers: {
       "content-type": "application/json",
+      "x-request-id": requestId,
       ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
       ...(init.headers ?? {}),
     },
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const message = body && typeof body === "object" && "error" in body
-      ? (body as { error?: { message?: string } }).error?.message
+    const errorBody = body && typeof body === "object" && "error" in body
+      ? (body as { error?: { message?: string; requestId?: string } }).error
       : undefined;
-    throw new Error(message ?? `HTTP ${response.status}`);
+    const message = errorBody?.message ?? `HTTP ${response.status}`;
+    const correlation = errorBody?.requestId ?? response.headers.get("x-request-id") ?? requestId;
+    throw new Error(`${message} [request ${correlation}]`);
   }
   return body as T;
 }

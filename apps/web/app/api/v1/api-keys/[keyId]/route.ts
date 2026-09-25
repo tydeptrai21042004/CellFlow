@@ -10,6 +10,6 @@ export async function DELETE(request: Request, context: { params: Promise<{ keyI
     await service.revokeApiKey(project, keyId);
     return new Response(null, { status: 204 });
   } catch (error) {
-    return errorResponse(error);
+    return errorResponse(error, request);
   }
 }

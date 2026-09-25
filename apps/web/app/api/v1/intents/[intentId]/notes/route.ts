@@ -11,6 +11,6 @@ export async function POST(request: Request, context: { params: Promise<{ intent
     const intent = await service.addOperatorNote(project, intentId, note);
     return Response.json({ intent }, { status: 201 });
   } catch (error) {
-    return errorResponse(error);
+    return errorResponse(error, request);
   }
 }

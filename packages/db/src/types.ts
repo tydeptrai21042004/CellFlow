@@ -33,6 +33,7 @@ export interface ProjectRecord {
   name: string;
   network: "testnet" | "mainnet" | "devnet";
   rpcUrl: string | null;
+  rpcGenesisHash: string | null;
   confirmationPolicy: ConfirmationPolicy;
   createdAt: string;
 }
@@ -80,6 +81,17 @@ export interface ExecutionRecord {
 export interface IntentAggregate {
   intent: IntentRecord;
   execution: ExecutionRecord;
+}
+
+
+export interface IntentListCursor {
+  createdAt: string;
+  id: string;
+}
+
+export interface IntentListPage {
+  items: IntentAggregate[];
+  nextCursor: IntentListCursor | null;
 }
 
 export interface StateEventRecord {

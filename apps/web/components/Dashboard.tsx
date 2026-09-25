@@ -29,6 +29,7 @@ const txHashPattern = /^0x[0-9a-fA-F]{64}$/;
 export default function Dashboard() {
   const [apiKey, setApiKey] = useState("");
   const [intents, setIntents] = useState<Intent[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [serverMetrics, setServerMetrics] = useState<{ total: number; active: number; confirmed: number; attention: number } | null>(null);
   const [operations, setOperations] = useState<Operations | null>(null);
   const [intentId, setIntentId] = useState("");
@@ -62,11 +63,12 @@ export default function Dashboard() {
     if (!silent) setBusy(true);
     try {
       const [body, metricBody, operationBody] = await Promise.all([
-        jsonRequest<{ intents: Intent[] }>("/api/v1/intents?limit=200", apiKey),
+        jsonRequest<{ intents: Intent[]; nextCursor: string | null }>("/api/v1/intents?limit=100", apiKey),
         jsonRequest<{ metrics: { total: number; active: number; confirmed: number; attention: number } }>("/api/v1/metrics", apiKey),
         jsonRequest<{ operations: Operations }>("/api/v1/operations", apiKey),
       ]);
       setIntents(body.intents ?? []);
+      setNextCursor(body.nextCursor ?? null);
       setServerMetrics(metricBody.metrics);
       setOperations(operationBody.operations);
       if (!silent) setMessage(`${body.intents?.length ?? 0} recent intent(s) loaded${metricBody.metrics.total > (body.intents?.length ?? 0) ? ` of ${metricBody.metrics.total} total` : ""}.`);
@@ -96,6 +98,27 @@ export default function Dashboard() {
     const matchesFilter = filter === "ALL" || (filter === "ATTENTION" ? statusTone(item.status) === "danger" || item.status === "UNKNOWN" : item.status === filter);
     return matchesSearch && matchesFilter;
   }), [filter, intents, search]);
+
+  async function loadMore() {
+    if (!canLoad || !nextCursor || busy) return;
+    setBusy(true);
+    try {
+      const body = await jsonRequest<{ intents: Intent[]; nextCursor: string | null }>(
+        `/api/v1/intents?limit=100&cursor=${encodeURIComponent(nextCursor)}`,
+        apiKey,
+      );
+      setIntents((current) => {
+        const seen = new Set(current.map((item) => item.intentId));
+        return [...current, ...(body.intents ?? []).filter((item) => !seen.has(item.intentId))];
+      });
+      setNextCursor(body.nextCursor ?? null);
+      setMessage(`${body.intents?.length ?? 0} older intent(s) loaded.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to load older intents");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function track() {
     setBusy(true);
@@ -233,6 +256,7 @@ export default function Dashboard() {
             </tbody>
           </table>
         </div>
+        {nextCursor && <div className="table-footer"><button className="secondary" type="button" disabled={busy || !canLoad} onClick={loadMore}>Load older intents</button><span>Keyset pagination keeps large projects responsive without offset scans.</span></div>}
       </section>
 
       <IntegrationsPanel apiKey={apiKey} onMessage={setMessage} />

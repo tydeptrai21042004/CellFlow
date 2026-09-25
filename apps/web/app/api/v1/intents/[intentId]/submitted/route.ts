@@ -12,6 +12,6 @@ export async function POST(request: Request, context: { params: Promise<{ intent
     const workflowRunId = await startReconciliationWorkflow(project.id, intentId);
     return Response.json({ intent, workflowRunId });
   } catch (error) {
-    return errorResponse(error);
+    return errorResponse(error, request);
   }
 }

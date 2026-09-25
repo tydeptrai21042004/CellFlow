@@ -8,7 +8,7 @@ export async function GET(request: Request) {
     const project = await projectFromRequest(request, "admin");
     return Response.json({ keys: await service.listApiKeys(project) });
   } catch (error) {
-    return errorResponse(error);
+    return errorResponse(error, request);
   }
 }
 
@@ -19,6 +19,6 @@ export async function POST(request: Request) {
     const key = await service.createApiKey(project, input);
     return Response.json({ key }, { status: 201 });
   } catch (error) {
-    return errorResponse(error);
+    return errorResponse(error, request);
   }
 }

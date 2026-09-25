@@ -37,8 +37,14 @@ function logError(requestId: string, error: unknown): void {
   console.error(JSON.stringify(entry));
 }
 
-export function errorResponse(error: unknown): Response {
-  const requestId = randomUUID();
+function requestIdFrom(request?: Request): string {
+  const supplied = request?.headers.get("x-request-id")?.trim();
+  if (supplied && /^[A-Za-z0-9._:-]{8,128}$/.test(supplied)) return supplied;
+  return randomUUID();
+}
+
+export function errorResponse(error: unknown, request?: Request): Response {
+  const requestId = requestIdFrom(request);
   logError(requestId, error);
   if (error instanceof CellFlowError) {
     return Response.json(

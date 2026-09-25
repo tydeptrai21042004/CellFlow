@@ -1,0 +1,65 @@
+# Operational upgrade changed files
+
+Baseline: `CellFlow-security-hardened-2026-09-25.zip`
+
+- Added: 4
+- Modified: 47
+- Removed: 0
+
+## Added
+- `OPERATIONAL_PREFLIGHT_REPORT.json`
+- `OPERATIONAL_UPGRADE_2026-09-25.md`
+- `packages/db/migrations/004_operational_scalability.sql`
+- `tests/runtime/operational-upgrade.test.mjs`
+
+## Modified
+- `.env.example`
+- `IMPLEMENTATION_STATUS.md`
+- `PRODUCTION_READINESS_V0.3.md`
+- `README.md`
+- `RELEASE_STATUS.json`
+- `UI_ROUTE_SEPARATION_V0.3.1.md`
+- `apps/api/src/http.ts`
+- `apps/api/src/service.ts`
+- `apps/web/app/api/health/route.ts`
+- `apps/web/app/api/health/rpc/route.ts`
+- `apps/web/app/api/internal/maintenance/route.ts`
+- `apps/web/app/api/ready/route.ts`
+- `apps/web/app/api/setup/route.ts`
+- `apps/web/app/api/v1/api-keys/[keyId]/route.ts`
+- `apps/web/app/api/v1/api-keys/route.ts`
+- `apps/web/app/api/v1/intents/[intentId]/ambiguous/route.ts`
+- `apps/web/app/api/v1/intents/[intentId]/broadcasting/route.ts`
+- `apps/web/app/api/v1/intents/[intentId]/evidence/route.ts`
+- `apps/web/app/api/v1/intents/[intentId]/notes/route.ts`
+- `apps/web/app/api/v1/intents/[intentId]/prepare/route.ts`
+- `apps/web/app/api/v1/intents/[intentId]/reconcile/route.ts`
+- `apps/web/app/api/v1/intents/[intentId]/route.ts`
+- `apps/web/app/api/v1/intents/[intentId]/submitted/route.ts`
+- `apps/web/app/api/v1/intents/[intentId]/track/route.ts`
+- `apps/web/app/api/v1/intents/route.ts`
+- `apps/web/app/api/v1/metrics/route.ts`
+- `apps/web/app/api/v1/operations/route.ts`
+- `apps/web/app/api/v1/project-evidence/route.ts`
+- `apps/web/app/api/v1/webhooks/[endpointId]/route.ts`
+- `apps/web/app/api/v1/webhooks/retry/route.ts`
+- `apps/web/app/api/v1/webhooks/route.ts`
+- `apps/web/app/api/v1/webhooks/test/route.ts`
+- `apps/web/app/globals.css`
+- `apps/web/components/Dashboard.tsx`
+- `apps/web/lib/browser-api.ts`
+- `docs/api/ERROR_MODEL.md`
+- `docs/api/openapi.yaml`
+- `docs/operations/RUNBOOK.md`
+- `package.json`
+- `packages/cli/bin/cellflow.mjs`
+- `packages/core/src/errors.ts`
+- `packages/db/src/repository.ts`
+- `packages/db/src/types.ts`
+- `packages/webhooks/src/delivery.ts`
+- `scripts/release-preflight.mjs`
+- `workflows/reconcile/src/reconcile.ts`
+- `workflows/webhook-delivery/src/index.ts`
+
+## Removed
+- None

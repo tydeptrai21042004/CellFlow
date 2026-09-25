@@ -40,6 +40,7 @@ export async function GET(request: Request) {
   const insecureRpcCount = urls.filter((url) => url.startsWith("http:")).length;
   const checks = {
     database: false,
+    schema: false,
     rpc: false,
     rpcNetwork: expectedChain ? false : true,
     rpcGenesis: expectedGenesis ? false : true,
@@ -62,6 +63,8 @@ export async function GET(request: Request) {
   try {
     checks.database = await repository.ping();
     if (!checks.database) errors.push("database unavailable");
+    checks.schema = checks.database && await repository.hasMigration("004_operational_scalability.sql");
+    if (checks.database && !checks.schema) errors.push("database schema is not at migration 004_operational_scalability.sql");
   } catch {
     errors.push("database unavailable");
   }

@@ -10,7 +10,7 @@ export async function GET(request: Request) {
     const evidence = await service.projectEvidence(project, false);
     return Response.json({ evidence });
   } catch (error) {
-    return errorResponse(error);
+    return errorResponse(error, request);
   }
 }
 
@@ -21,6 +21,6 @@ export async function POST(request: Request) {
     const evidence = await service.projectEvidence(project, true);
     return Response.json({ evidence }, { status: 201 });
   } catch (error) {
-    return errorResponse(error);
+    return errorResponse(error, request);
   }
 }

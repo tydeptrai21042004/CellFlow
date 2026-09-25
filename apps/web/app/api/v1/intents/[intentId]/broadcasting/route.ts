@@ -10,6 +10,6 @@ export async function POST(request: Request, context: { params: Promise<{ intent
     const intent = await service.markSubmission(project, intentId, "BROADCASTING");
     return Response.json({ intent });
   } catch (error) {
-    return errorResponse(error);
+    return errorResponse(error, request);
   }
 }

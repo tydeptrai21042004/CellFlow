@@ -50,6 +50,7 @@ export class CellFlowService {
     confirmationPolicy?: ProjectRecord["confirmationPolicy"];
   }): Promise<{ project: ProjectRecord; apiKey: string }> {
     let rpcUrl = input.rpcUrl;
+    let rpcGenesisHash = process.env.CKB_EXPECTED_GENESIS_HASH?.trim().toLowerCase() || null;
     if (rpcUrl) {
       const validated = await validateWebhookUrl(rpcUrl, {
         allowHttpLocalhost: process.env.NODE_ENV !== "production",
@@ -70,10 +71,15 @@ export class CellFlowService {
             400,
           );
         }
+        const observedGenesis = genesisHash?.trim().toLowerCase() ?? null;
+        if (!observedGenesis || !/^0x[0-9a-f]{64}$/.test(observedGenesis)) {
+          throw new CellFlowError("RPC_RESPONSE_INVALID", "RPC returned an invalid genesis block hash", 400);
+        }
         const configuredGenesis = process.env.CKB_EXPECTED_GENESIS_HASH?.trim().toLowerCase();
-        if (configuredGenesis && genesisHash?.toLowerCase() !== configuredGenesis) {
+        if (configuredGenesis && observedGenesis !== configuredGenesis) {
           throw new CellFlowError("RPC_RESPONSE_INVALID", "RPC genesis hash does not match CKB_EXPECTED_GENESIS_HASH", 400);
         }
+        rpcGenesisHash = observedGenesis;
         if (info.is_initial_block_download === true && process.env.NODE_ENV === "production") {
           throw new CellFlowError("RPC_UNAVAILABLE", "RPC node is still in initial block download", 503);
         }
@@ -91,6 +97,7 @@ export class CellFlowService {
       name: input.name,
       network: input.network,
       rpcUrl: rpcUrl ?? null,
+      rpcGenesisHash,
       confirmationPolicy: input.confirmationPolicy ?? parseConfirmationPolicy(
         process.env.DEFAULT_CONFIRMATION_POLICY ?? "depth:4",
       ),
@@ -158,6 +165,7 @@ export class CellFlowService {
         name: project.name,
         network: project.network,
         confirmationPolicy: project.confirmationPolicy,
+        rpcGenesisHash: project.rpcGenesisHash,
       },
       release: {
         version: "0.3.0",
@@ -191,9 +199,33 @@ export class CellFlowService {
     return { ...document, sha256, persisted: true, exportId: record.id, exportedAt: record.createdAt };
   }
 
-  async listIntents(project: ProjectRecord, limit?: number): Promise<Record<string, unknown>[]> {
-    const rows = await this.repository.listIntents(project.id, limit ?? 100);
-    return Promise.all(rows.map((row) => this.repository.executionPublicView(row)));
+  private decodeIntentCursor(value?: string | null): { createdAt: string; id: string } | null {
+    if (!value) return null;
+    if (value.length > 512) throw new CellFlowError("INVALID_CURSOR", "Cursor is too long", 400);
+    try {
+      const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as { createdAt?: unknown; id?: unknown };
+      if (typeof parsed.createdAt !== "string" || !Number.isFinite(Date.parse(parsed.createdAt))) throw new Error("createdAt");
+      if (typeof parsed.id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(parsed.id)) throw new Error("id");
+      return { createdAt: new Date(parsed.createdAt).toISOString(), id: parsed.id };
+    } catch {
+      throw new CellFlowError("INVALID_CURSOR", "Cursor is invalid or expired", 400);
+    }
+  }
+
+  private encodeIntentCursor(cursor: { createdAt: string; id: string } | null): string | null {
+    return cursor ? Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url") : null;
+  }
+
+  async listIntents(
+    project: ProjectRecord,
+    limit?: number,
+    cursor?: string | null,
+  ): Promise<{ intents: Record<string, unknown>[]; nextCursor: string | null }> {
+    const page = await this.repository.listIntentsPage(project.id, limit ?? 100, this.decodeIntentCursor(cursor));
+    return {
+      intents: await Promise.all(page.items.map((row) => this.repository.executionPublicView(row))),
+      nextCursor: this.encodeIntentCursor(page.nextCursor),
+    };
   }
 
   async intentDetail(project: ProjectRecord, intentId: string): Promise<Record<string, unknown>> {

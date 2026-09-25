@@ -8,10 +8,14 @@ export async function GET(request: Request) {
     const project = await projectFromRequest(request, "read");
     const url = new URL(request.url);
     const limit = Number(url.searchParams.get("limit") ?? "100");
-    const intents = await service.listIntents(project, Number.isFinite(limit) ? limit : 100);
-    return Response.json({ intents });
+    const page = await service.listIntents(
+      project,
+      Number.isFinite(limit) ? limit : 100,
+      url.searchParams.get("cursor"),
+    );
+    return Response.json(page);
   } catch (error) {
-    return errorResponse(error);
+    return errorResponse(error, request);
   }
 }
 
@@ -22,6 +26,6 @@ export async function POST(request: Request) {
     const result = await service.createIntent(project, input);
     return Response.json({ intent: result.view, created: result.created }, { status: result.created ? 201 : 200 });
   } catch (error) {
-    return errorResponse(error);
+    return errorResponse(error, request);
   }
 }

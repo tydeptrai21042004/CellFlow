@@ -8,6 +8,6 @@ export async function GET(request: Request) {
     const project = await projectFromRequest(request, "read");
     return Response.json({ operations: await service.operationalHealth(project) });
   } catch (error) {
-    return errorResponse(error);
+    return errorResponse(error, request);
   }
 }

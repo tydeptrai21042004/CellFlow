@@ -15,6 +15,6 @@ export async function POST(request: Request) {
     });
     return Response.json({ project: result.project, apiKey: result.apiKey }, { status: 201 });
   } catch (error) {
-    return errorResponse(error);
+    return errorResponse(error, request);
   }
 }

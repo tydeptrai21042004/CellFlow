@@ -14,6 +14,7 @@ export type CellFlowErrorCode =
   | "RATE_LIMITED"
   | "ASSERTION_FAILED"
   | "INVALID_JSON"
+  | "INVALID_CURSOR"
   | "REQUEST_TOO_LARGE"
   | "WEBHOOK_NOT_FOUND"
   | "INTERNAL_ERROR";
