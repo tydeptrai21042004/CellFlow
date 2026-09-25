@@ -43,11 +43,15 @@ for (const path of manifests) {
 }
 add("pinned-direct-dependencies", floating.length === 0, "blocker", floating.length ? floating.join(", ") : "direct third-party versions are pinned");
 
-const envExample = await readFile(join(root, ".env.example"), "utf8");
-for (const key of [
-  "DATABASE_URL", "CKB_NETWORK", "CKB_RPC_URL", "CKB_EXPECTED_GENESIS_HASH",
-  "CELLFLOW_ENCRYPTION_KEY", "CELLFLOW_BOOTSTRAP_TOKEN", "CELLFLOW_SETUP_ENABLED", "CRON_SECRET",
-]) add(`env-template:${key}`, envExample.includes(`${key}=`), "blocker", `${key} documented`);
+const envExampleExists = await exists(".env.example");
+add("file:.env.example", envExampleExists, "blocker", envExampleExists ? ".env.example present" : ".env.example missing");
+if (envExampleExists) {
+  const envExample = await readFile(join(root, ".env.example"), "utf8");
+  for (const key of [
+    "DATABASE_URL", "CKB_NETWORK", "CKB_RPC_URL", "CKB_EXPECTED_GENESIS_HASH",
+    "CELLFLOW_ENCRYPTION_KEY", "CELLFLOW_BOOTSTRAP_TOKEN", "CELLFLOW_SETUP_ENABLED", "CRON_SECRET",
+  ]) add(`env-template:${key}`, envExample.includes(`${key}=`), "blocker", `${key} documented`);
+}
 
 const blockers = checks.filter((item) => item.severity === "blocker" && !item.ok);
 const report = {

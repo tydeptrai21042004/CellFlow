@@ -56,7 +56,11 @@ export class CellFlowService {
       });
       rpcUrl = validated.toString();
       try {
-        const info = await new CkbRpcClient([rpcUrl]).getBlockchainInfo();
+        const rpcClient = new CkbRpcClient([rpcUrl]);
+        const [info, genesisHash] = await Promise.all([
+          rpcClient.getBlockchainInfo(),
+          rpcClient.getGenesisHash(),
+        ]);
         const chain = typeof info.chain === "string" ? info.chain : "";
         const expectedChain = input.network === "mainnet" ? "ckb" : input.network === "testnet" ? "ckb_testnet" : null;
         if (expectedChain && chain !== expectedChain) {
@@ -65,6 +69,10 @@ export class CellFlowService {
             `RPC network mismatch: project expects ${input.network} but endpoint reports ${chain || "unknown"}`,
             400,
           );
+        }
+        const configuredGenesis = process.env.CKB_EXPECTED_GENESIS_HASH?.trim().toLowerCase();
+        if (configuredGenesis && genesisHash?.toLowerCase() !== configuredGenesis) {
+          throw new CellFlowError("RPC_RESPONSE_INVALID", "RPC genesis hash does not match CKB_EXPECTED_GENESIS_HASH", 400);
         }
         if (info.is_initial_block_download === true && process.env.NODE_ENV === "production") {
           throw new CellFlowError("RPC_UNAVAILABLE", "RPC node is still in initial block download", 503);
@@ -294,7 +302,7 @@ export class CellFlowService {
     return this.intentDetail(project, intentId);
   }
 
-  async evidence(project: ProjectRecord, intentId: string): Promise<Record<string, unknown>> {
+  async evidence(project: ProjectRecord, intentId: string, persist = false): Promise<Record<string, unknown>> {
     const aggregate = await this.getIntent(project, intentId);
     const events = await this.repository.getEvents(project.id, aggregate.intent.id);
     const document = buildEvidence({
@@ -317,6 +325,7 @@ export class CellFlowService {
       })),
     });
     const sha256 = createHash("sha256").update(stable(document)).digest("hex");
+    if (!persist) return { ...document, sha256, persisted: false };
     const exportRecord = await this.repository.recordEvidenceExport({
       projectId: project.id,
       intentRowId: aggregate.intent.id,
@@ -325,7 +334,7 @@ export class CellFlowService {
       maxEventSequence: events.at(-1)?.sequence ?? 0,
       document,
     });
-    return { ...document, sha256, exportId: exportRecord.id, exportedAt: exportRecord.createdAt };
+    return { ...document, sha256, persisted: true, exportId: exportRecord.id, exportedAt: exportRecord.createdAt };
   }
 
   async createApiKey(
@@ -363,6 +372,7 @@ export class CellFlowService {
     const result = await this.repository.revokeApiKey(project.id, keyId);
     if (result === "NOT_FOUND") throw new CellFlowError("API_KEY_NOT_FOUND", "API key not found", 404);
     if (result === "LAST_ACTIVE") throw new CellFlowError("TRANSITION_INVALID", "Create a replacement API key before revoking the last active key", 409);
+    if (result === "LAST_ADMIN") throw new CellFlowError("TRANSITION_INVALID", "Create another active admin API key before revoking the last admin key", 409);
   }
 
   async createWebhook(project: ProjectRecord, rawUrl: string): Promise<{

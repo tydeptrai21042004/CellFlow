@@ -7,8 +7,19 @@ export async function GET(request: Request, context: { params: Promise<{ intentI
   try {
     const project = await projectFromRequest(request, "read");
     const { intentId } = await context.params;
-    const evidence = await service.evidence(project, intentId);
+    const evidence = await service.evidence(project, intentId, false);
     return Response.json({ evidence });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+export async function POST(request: Request, context: { params: Promise<{ intentId: string }> }) {
+  try {
+    const project = await projectFromRequest(request, "admin");
+    const { intentId } = await context.params;
+    const evidence = await service.evidence(project, intentId, true);
+    return Response.json({ evidence }, { status: 201 });
   } catch (error) {
     return errorResponse(error);
   }

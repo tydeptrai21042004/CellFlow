@@ -50,7 +50,14 @@ export async function GET(request: Request) {
   };
   const errors: string[] = [];
   const warnings: string[] = [];
-  let rpc: { endpoints: number; genesisHash?: string | null; chain?: string | null } = { endpoints: urls.length };
+  const endpointResults: Array<{
+    endpoint: string;
+    ok: boolean;
+    chain: string | null;
+    genesisHash: string | null;
+    initialBlockDownload: boolean | null;
+    error?: string;
+  }> = [];
 
   try {
     checks.database = await repository.ping();
@@ -62,35 +69,43 @@ export async function GET(request: Request) {
   if (urls.length === 0) {
     errors.push("CKB RPC not configured");
   } else {
-    try {
-      const client = new CkbRpcClient(urls);
-      const [, genesisHash, blockchainInfo] = await Promise.all([
-        client.getTipHeader(),
-        client.getGenesisHash(),
-        client.getBlockchainInfo(),
-      ]);
-      checks.rpc = true;
-      const chain = typeof blockchainInfo.chain === "string" ? blockchainInfo.chain : null;
-      rpc = { endpoints: urls.length, genesisHash, chain };
-      if (expectedChain) {
-        checks.rpcNetwork = chain === expectedChain;
-        if (!checks.rpcNetwork) errors.push(`CKB RPC network mismatch: expected ${expectedChain}`);
+    for (const url of urls) {
+      try {
+        const client = new CkbRpcClient([url]);
+        const [, genesisHash, blockchainInfo] = await Promise.all([
+          client.getTipHeader(),
+          client.getGenesisHash(),
+          client.getBlockchainInfo(),
+        ]);
+        const chain = typeof blockchainInfo.chain === "string" ? blockchainInfo.chain : null;
+        const initialBlockDownload = blockchainInfo.is_initial_block_download === true;
+        const networkOk = !expectedChain || chain === expectedChain;
+        const genesisOk = !expectedGenesis || genesisHash?.toLowerCase() === expectedGenesis;
+        const endpointOk = networkOk && genesisOk && (!production || !initialBlockDownload);
+        endpointResults.push({ endpoint: url, ok: endpointOk, chain, genesisHash, initialBlockDownload });
+        if (!networkOk) errors.push(`CKB RPC network mismatch for ${new URL(url).host}: expected ${expectedChain}`);
+        if (!genesisOk) errors.push(`CKB RPC genesis mismatch for ${new URL(url).host}`);
+        if (initialBlockDownload && production) errors.push(`CKB RPC ${new URL(url).host} is still in initial block download`);
+      } catch (error) {
+        endpointResults.push({
+          endpoint: url,
+          ok: false,
+          chain: null,
+          genesisHash: null,
+          initialBlockDownload: null,
+          error: error instanceof Error ? error.message : "RPC check failed",
+        });
+        errors.push(`CKB RPC unavailable: ${new URL(url).host}`);
       }
-      if (blockchainInfo.is_initial_block_download === true && production) {
-        errors.push("CKB RPC is still in initial block download");
-      }
-      if (expectedGenesis) {
-        checks.rpcGenesis = genesisHash?.toLowerCase() === expectedGenesis;
-        if (!checks.rpcGenesis) errors.push("CKB RPC genesis hash does not match CKB_EXPECTED_GENESIS_HASH");
-      } else if (production) {
-        warnings.push("CKB_EXPECTED_GENESIS_HASH is not pinned; configure it to prevent accidental wrong-network RPC use");
-      }
-    } catch {
-      errors.push("CKB RPC unavailable");
     }
+
+    checks.rpc = endpointResults.length > 0 && endpointResults.every((item) => item.ok);
+    checks.rpcNetwork = !expectedChain || endpointResults.every((item) => item.chain === expectedChain);
+    checks.rpcGenesis = !expectedGenesis || endpointResults.every((item) => item.genesisHash?.toLowerCase() === expectedGenesis);
   }
 
   if (production && urls.length < 2) warnings.push("only one CKB RPC endpoint configured; add an independent fallback for production");
+  if (production && !expectedGenesis) warnings.push("CKB_EXPECTED_GENESIS_HASH is not pinned; configure it to prevent accidental wrong-network RPC use");
   if (!checks.rpcTransport) errors.push("plain HTTP CKB RPC is blocked in production unless CKB_ALLOW_INSECURE_RPC=true");
   if (!checks.encryptionKey) errors.push("encryption key missing or too short");
   if (!checks.cronSecret) errors.push("cron secret missing or too short");
@@ -98,6 +113,7 @@ export async function GET(request: Request) {
 
   const ok = Object.values(checks).every(Boolean);
   const detailed = await canSeeDetails(request, production);
+  const rpc = { endpoints: endpointResults };
   const base = {
     ok,
     service: "cellflow",

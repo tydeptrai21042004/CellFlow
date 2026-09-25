@@ -39,6 +39,17 @@ interface JsonRpcEnvelope<T> {
   error?: { code: number; message: string; data?: unknown };
 }
 
+export interface RpcIdentityExpectation {
+  chain?: string | null;
+  genesisHash?: string | null;
+}
+
+function normalizeHash(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const normalized = value.trim().toLowerCase();
+  return /^0x[0-9a-f]{64}$/.test(normalized) ? normalized : null;
+}
+
 export function parseRpcUrls(...sources: Array<string | null | undefined>): string[] {
   const seen = new Set<string>();
   const urls: string[] = [];
@@ -117,6 +128,31 @@ class RpcEndpointSession {
     if (!("result" in payload)) throw new Error("RPC response did not include result");
     return payload.result as T;
   }
+
+  async assertIdentity(expected: RpcIdentityExpectation): Promise<void> {
+    if (!expected.chain && !expected.genesisHash) return;
+    const [info, genesis] = await Promise.all([
+      expected.chain ? this.call<Record<string, unknown>>("get_blockchain_info", []) : Promise.resolve(null),
+      expected.genesisHash ? this.call<string | null>("get_block_hash", ["0x0"]) : Promise.resolve(null),
+    ]);
+    if (expected.chain) {
+      const actualChain = info && typeof info.chain === "string" ? info.chain : null;
+      if (actualChain !== expected.chain) {
+        throw new CellFlowError(
+          "RPC_RESPONSE_INVALID",
+          `RPC endpoint network mismatch: expected ${expected.chain}, received ${actualChain ?? "unknown"}`,
+          503,
+        );
+      }
+    }
+    if (expected.genesisHash) {
+      const expectedGenesis = normalizeHash(expected.genesisHash);
+      const actualGenesis = normalizeHash(genesis);
+      if (!expectedGenesis || actualGenesis !== expectedGenesis) {
+        throw new CellFlowError("RPC_RESPONSE_INVALID", "RPC endpoint genesis hash mismatch", 503);
+      }
+    }
+  }
 }
 
 export class CkbRpcClient {
@@ -181,12 +217,20 @@ export class CkbRpcClient {
     return this.call<RpcLiveCellResult | null>("get_live_cell", params);
   }
 
-  async observe(txHash: string, prior?: { blockHash: string; blockNumber: string }): Promise<{
+  async observe(
+    txHash: string,
+    prior?: { blockHash: string; blockNumber: string },
+    expectedIdentity: RpcIdentityExpectation = {},
+  ): Promise<{
     observation: ChainObservation;
     rpcResult: RpcTransactionResult | null;
     endpoint: string;
   }> {
     return this.withSession(async (session) => {
+      // Validate the exact endpoint selected by failover before trusting chain
+      // observations from it. This prevents a misconfigured fallback from
+      // silently reconciling a project against another CKB network.
+      await session.assertIdentity(expectedIdentity);
       const observedAt = new Date().toISOString();
       const result = await session.call<RpcTransactionResult | null>("get_transaction", [txHash]);
       let priorCommitCanonical: boolean | undefined;
@@ -288,6 +332,7 @@ export async function observeTransaction(
   client: CkbRpcClient,
   txHash: string,
   prior?: { blockHash: string; blockNumber: string },
+  expectedIdentity: RpcIdentityExpectation = {},
 ): Promise<{ observation: ChainObservation; rpcResult: RpcTransactionResult | null; endpoint: string }> {
-  return client.observe(txHash, prior);
+  return client.observe(txHash, prior, expectedIdentity);
 }

@@ -36,6 +36,12 @@ function endpointsFor(projectRpcUrl: string | null): string[] {
   );
 }
 
+function expectedChain(network: string): string | null {
+  if (network === "mainnet") return "ckb";
+  if (network === "testnet") return "ckb_testnet";
+  return null;
+}
+
 export interface ReconcileResult {
   intentId: string;
   txHash: string | null;
@@ -107,6 +113,9 @@ async function reconcileIntentOnce(
   if (!project) throw new Error("Project missing during reconciliation");
   const urls = endpointsFor(project.rpcUrl);
   if (urls.length === 0) throw new Error("No CKB RPC endpoint configured");
+  if (!project.rpcUrl && process.env.CKB_NETWORK && process.env.CKB_NETWORK !== project.network) {
+    throw new Error(`Project network ${project.network} does not match global CKB_NETWORK ${process.env.CKB_NETWORK}`);
+  }
   const client = new CkbRpcClient(urls);
   const prior = snapshotFromExecution(aggregate.execution);
 
@@ -118,19 +127,37 @@ async function reconcileIntentOnce(
       prior.committedBlockHash && prior.committedBlockNumber
         ? { blockHash: prior.committedBlockHash, blockNumber: prior.committedBlockNumber }
         : undefined,
+      {
+        chain: expectedChain(project.network),
+        genesisHash: process.env.CKB_EXPECTED_GENESIS_HASH ?? null,
+      },
     );
   } catch (error) {
-    const reconciling = setWorkflowStatus(prior, "RECONCILING");
+    // An RPC outage is absence of new evidence, not evidence that a previously
+    // committed transaction disappeared. Route UNKNOWN through the state machine
+    // so a trusted COMMITTED observation is preserved unless canonicality is
+    // explicitly disproved.
+    const observedAt = new Date().toISOString();
+    const failureObservation = {
+      status: "UNKNOWN" as const,
+      observedAt,
+      raw: {
+        source: "rpc_failure",
+        error: error instanceof Error ? error.message : "RPC observation failed",
+      },
+    };
+    const applied = applyChainObservation(prior, failureObservation);
     const nextDelayMs = nextReconcileDelayMs(aggregate.execution.reconcileAttempts, "UNKNOWN");
     const eventId = await repository.applySnapshot({
       aggregate,
-      snapshot: { ...reconciling, chainStatus: "UNKNOWN" },
+      snapshot: applied.snapshot,
       event: {
-        kind: "WORKFLOW_UPDATED",
-        fromStatus: deriveOverallStatus(prior),
-        toStatus: "RECONCILING",
-        reason: error instanceof Error ? error.message : "RPC observation failed",
-        occurredAt: new Date().toISOString(),
+        kind: applied.event.kind,
+        fromStatus: applied.event.fromOverall,
+        toStatus: applied.event.toOverall,
+        reason: applied.event.reason ?? (error instanceof Error ? error.message : "RPC observation failed"),
+        rawObservation: failureObservation.raw,
+        occurredAt: observedAt,
       },
       nextReconcileAt: new Date(Date.now() + nextDelayMs),
     });
@@ -138,7 +165,7 @@ async function reconcileIntentOnce(
       intentId: aggregate.intent.intentId,
       txHash,
       changed: Boolean(eventId),
-      status: "RECONCILING",
+      status: deriveOverallStatus(applied.snapshot),
       assertionStatus: aggregate.execution.assertionStatus,
       terminal: false,
       nextDelayMs,

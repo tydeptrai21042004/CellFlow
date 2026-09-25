@@ -230,10 +230,16 @@ export class CellFlowRepository {
     projectId: string; id: string; prefix: string; hash: string; label: string;
     scopes: ApiKeyScope[]; expiresAt?: Date | null;
   }): Promise<void> {
-    await this.sql`
-      insert into api_keys (id, project_id, key_prefix, key_hash, label, scopes, expires_at)
-      values (${input.id}, ${input.projectId}, ${input.prefix}, ${input.hash}, ${input.label}, ${input.scopes}, ${input.expiresAt ?? null})
-    `;
+    await this.sql.begin(async (tx) => {
+      // Serialize credential mutations for a project. This shares the same lock
+      // used by revocation and closes create/revoke race windows.
+      const project = await tx`select id from projects where id = ${input.projectId} for update`;
+      if (!project[0]) throw new Error("Project not found while creating API key");
+      await tx`
+        insert into api_keys (id, project_id, key_prefix, key_hash, label, scopes, expires_at)
+        values (${input.id}, ${input.projectId}, ${input.prefix}, ${input.hash}, ${input.label}, ${input.scopes}, ${input.expiresAt ?? null})
+      `;
+    });
   }
 
   async listApiKeys(projectId: string): Promise<Array<{
@@ -253,10 +259,16 @@ export class CellFlowRepository {
     }));
   }
 
-  async revokeApiKey(projectId: string, keyId: string): Promise<"REVOKED" | "NOT_FOUND" | "LAST_ACTIVE"> {
+  async revokeApiKey(projectId: string, keyId: string): Promise<"REVOKED" | "NOT_FOUND" | "LAST_ACTIVE" | "LAST_ADMIN"> {
     return this.sql.begin(async (tx) => {
+      // All API-key lifecycle operations for a project serialize on the project
+      // row. Locking only the target key allows two concurrent revocations to
+      // each observe another active key and revoke both.
+      const project = await tx`select id from projects where id = ${projectId} for update`;
+      if (!project[0]) return "NOT_FOUND" as const;
+
       const rows = await tx`
-        select id, revoked_at, expires_at
+        select id, revoked_at, expires_at, scopes
         from api_keys where project_id = ${projectId} and id = ${keyId} for update
       `;
       if (!rows[0]) return "NOT_FOUND" as const;
@@ -264,12 +276,19 @@ export class CellFlowRepository {
       const targetExpired = rows[0].expires_at && new Date(rows[0].expires_at as Date | string).getTime() <= Date.now();
       if (!targetExpired) {
         const active = await tx`
-          select count(*)::int as count from api_keys
+          select id, scopes from api_keys
           where project_id = ${projectId}
             and revoked_at is null
             and (expires_at is null or expires_at > now())
+          for update
         `;
-        if (Number(active[0]?.count ?? 0) <= 1) return "LAST_ACTIVE" as const;
+        if (active.length <= 1) return "LAST_ACTIVE" as const;
+
+        const targetScopes = (rows[0].scopes ?? []) as ApiKeyScope[];
+        if (targetScopes.includes("admin")) {
+          const activeAdmins = active.filter((row) => ((row.scopes ?? []) as ApiKeyScope[]).includes("admin"));
+          if (activeAdmins.length <= 1) return "LAST_ADMIN" as const;
+        }
       }
       await tx`update api_keys set revoked_at = now() where project_id = ${projectId} and id = ${keyId}`;
       return "REVOKED" as const;
