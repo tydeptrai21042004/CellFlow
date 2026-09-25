@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Sql } from "postgres";
+import type { Sql, TransactionSql } from "postgres";
 import { deriveOverallStatus, type ConfirmationPolicy, type ExecutionSnapshot } from "@cellflow/core";
 import { getSql } from "./client.ts";
 import type {
@@ -15,6 +15,21 @@ import type {
 
 function iso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+type JsonValue = null | string | number | boolean | JsonValue[] | { [key: string]: JsonValue };
+
+function toJsonValue(value: unknown): JsonValue {
+  if (value === undefined) return null;
+  try {
+    const serialized = JSON.stringify(value);
+    if (serialized === undefined) return null;
+    return JSON.parse(serialized) as JsonValue;
+  } catch (error) {
+    throw new TypeError(
+      `Value is not JSON-serializable: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 function mapProject(row: Record<string, unknown>): ProjectRecord {
@@ -96,7 +111,7 @@ export class CellFlowRepository {
     return Number(rows[0]?.ok) === 1;
   }
 
-  private async insertEventAndOutbox(tx: Sql, input: {
+  private async insertEventAndOutbox(tx: TransactionSql, input: {
     projectId: string;
     intentRowId: string;
     executionId: string;
@@ -119,7 +134,7 @@ export class CellFlowRepository {
       ) values (
         ${eventId}, ${input.projectId}, ${input.intentRowId}, ${input.executionId}, ${input.kind},
         ${input.fromStatus}, ${input.toStatus}, ${input.reason ?? null},
-        ${input.rawObservation === undefined ? null : tx.json(input.rawObservation)}, ${input.occurredAt}
+        ${input.rawObservation === undefined ? null : tx.json(toJsonValue(input.rawObservation))}, ${input.occurredAt}
       )
     `;
 
@@ -144,7 +159,7 @@ export class CellFlowRepository {
         id, project_id, endpoint_id, event_id, event_type, payload, next_attempt_at
       )
       select
-        gen_random_uuid()::text, ${input.projectId}, w.id, ${eventId}, ${eventType}, ${tx.json(payload)}, now()
+        gen_random_uuid()::text, ${input.projectId}, w.id, ${eventId}, ${eventType}, ${tx.json(toJsonValue(payload))}, now()
       from webhook_endpoints w
       where w.project_id = ${input.projectId} and w.enabled = true
       on conflict (endpoint_id, event_id) do nothing
@@ -165,7 +180,7 @@ export class CellFlowRepository {
     return this.sql.begin(async (tx) => {
       const projectRows = await tx`
         insert into projects (id, name, network, rpc_url, confirmation_policy)
-        values (${projectId}, ${input.name}, ${input.network}, ${input.rpcUrl ?? null}, ${tx.json(input.confirmationPolicy)})
+        values (${projectId}, ${input.name}, ${input.network}, ${input.rpcUrl ?? null}, ${tx.json(toJsonValue(input.confirmationPolicy))})
         returning *
       `;
       await tx`
@@ -262,7 +277,7 @@ export class CellFlowRepository {
       const intentRowId = randomUUID();
       const inserted = await tx`
         insert into intents (id, project_id, intent_id, metadata, expected_cells)
-        values (${intentRowId}, ${input.project.id}, ${input.intentId}, ${tx.json(input.metadata)}, ${tx.json(input.expectedCells)})
+        values (${intentRowId}, ${input.project.id}, ${input.intentId}, ${tx.json(toJsonValue(input.metadata))}, ${tx.json(toJsonValue(input.expectedCells))})
         on conflict (project_id, intent_id) do nothing
         returning *
       `;
@@ -283,11 +298,11 @@ export class CellFlowRepository {
           submission_status, chain_status, workflow_status, confirmation_policy, next_reconcile_at
         ) values (
           ${executionId}, ${input.project.id}, ${intentRowId}, ${input.txHash ?? null}, ${input.project.network},
-          ${submissionStatus}, 'UNOBSERVED', 'IDLE', ${tx.json(input.project.confirmationPolicy)},
+          ${submissionStatus}, 'UNOBSERVED', 'IDLE', ${tx.json(toJsonValue(input.project.confirmationPolicy))},
           ${input.txHash ? new Date() : null}
         )
       `;
-      await this.insertEventAndOutbox(tx as Sql, {
+      await this.insertEventAndOutbox(tx, {
         projectId: input.project.id,
         intentRowId,
         executionId,
@@ -384,7 +399,7 @@ export class CellFlowRepository {
         ...(input.aggregate.execution.committedBlockHash ? { committedBlockHash: input.aggregate.execution.committedBlockHash } : {}),
         ...(input.aggregate.execution.committedBlockNumber ? { committedBlockNumber: input.aggregate.execution.committedBlockNumber } : {}),
       };
-      await this.insertEventAndOutbox(tx as Sql, {
+      await this.insertEventAndOutbox(tx, {
         projectId: input.aggregate.intent.projectId,
         intentRowId: input.aggregate.intent.id,
         executionId: input.aggregate.execution.id,
@@ -434,7 +449,7 @@ export class CellFlowRepository {
         ...(input.aggregate.execution.committedBlockHash ? { committedBlockHash: input.aggregate.execution.committedBlockHash } : {}),
         ...(input.aggregate.execution.committedBlockNumber ? { committedBlockNumber: input.aggregate.execution.committedBlockNumber } : {}),
       };
-      await this.insertEventAndOutbox(tx as Sql, {
+      await this.insertEventAndOutbox(tx, {
         projectId: input.aggregate.intent.projectId,
         intentRowId: input.aggregate.intent.id,
         executionId: input.aggregate.execution.id,
@@ -491,8 +506,12 @@ export class CellFlowRepository {
           committed_block_number = ${input.snapshot.committedBlockNumber ?? null},
           rejection_reason = ${input.snapshot.rejectionReason ?? null},
           assertion_status = ${nextAssertionStatus},
-          assertion_result = ${input.assertionResult === undefined ? prior.assertionResult : tx.json(input.assertionResult)},
-          last_raw_observation = ${input.event.rawObservation === undefined ? prior.lastRawObservation : tx.json(input.event.rawObservation)},
+          assertion_result = ${input.assertionResult === undefined
+            ? (prior.assertionResult === null ? null : tx.json(toJsonValue(prior.assertionResult)))
+            : tx.json(toJsonValue(input.assertionResult))},
+          last_raw_observation = ${input.event.rawObservation === undefined
+            ? (prior.lastRawObservation === null ? null : tx.json(toJsonValue(prior.lastRawObservation)))
+            : tx.json(toJsonValue(input.event.rawObservation))},
           last_observed_at = ${input.event.rawObservation === undefined ? prior.lastObservedAt : new Date(input.event.occurredAt)},
           next_reconcile_at = ${input.nextReconcileAt},
           reconcile_attempts = reconcile_attempts + 1,
@@ -504,7 +523,7 @@ export class CellFlowRepository {
       if (updated.length !== 1) throw new OptimisticConcurrencyError();
       await tx`update intents set updated_at = now() where id = ${input.aggregate.intent.id}`;
       if (!meaningful) return null;
-      return this.insertEventAndOutbox(tx as Sql, {
+      return this.insertEventAndOutbox(tx, {
         projectId: input.aggregate.intent.projectId,
         intentRowId: input.aggregate.intent.id,
         executionId: prior.id,
@@ -530,7 +549,7 @@ export class CellFlowRepository {
     reason?: string;
     rawObservation?: unknown;
   }): Promise<string> {
-    return this.sql.begin(async (tx) => this.insertEventAndOutbox(tx as Sql, {
+    return this.sql.begin(async (tx) => this.insertEventAndOutbox(tx, {
       projectId: input.aggregate.intent.projectId,
       intentRowId: input.aggregate.intent.id,
       executionId: input.aggregate.execution.id,
@@ -678,7 +697,7 @@ export class CellFlowRepository {
   async enqueueWebhookDeliveries(input: { projectId: string; eventId: string; eventType: string; payload: unknown }): Promise<number> {
     const rows = await this.sql`
       insert into webhook_deliveries (id, project_id, endpoint_id, event_id, event_type, payload, next_attempt_at)
-      select gen_random_uuid()::text, ${input.projectId}, w.id, ${input.eventId}, ${input.eventType}, ${this.sql.json(input.payload)}, now()
+      select gen_random_uuid()::text, ${input.projectId}, w.id, ${input.eventId}, ${input.eventType}, ${this.sql.json(toJsonValue(input.payload))}, now()
       from webhook_endpoints w where w.project_id = ${input.projectId} and w.enabled = true
       on conflict (endpoint_id, event_id) do nothing returning id
     `;
@@ -779,7 +798,7 @@ export class CellFlowRepository {
     const id = randomUUID();
     const rows = await this.sql`
       insert into evidence_exports (id, project_id, intent_row_id, evidence_sha256, schema_version, max_event_sequence, document)
-      values (${id}, ${input.projectId}, ${input.intentRowId}, ${input.sha256}, ${input.schemaVersion}, ${input.maxEventSequence}, ${this.sql.json(input.document)})
+      values (${id}, ${input.projectId}, ${input.intentRowId}, ${input.sha256}, ${input.schemaVersion}, ${input.maxEventSequence}, ${this.sql.json(toJsonValue(input.document))})
       on conflict (intent_row_id, evidence_sha256) do update set document = excluded.document
       returning *
     `;
