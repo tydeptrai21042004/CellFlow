@@ -5,7 +5,7 @@ export const runtime = "nodejs";
 
 export async function GET(request: Request) {
   try {
-    const project = await projectFromRequest(request);
+    const project = await projectFromRequest(request, "read");
     const url = new URL(request.url);
     const limit = Number(url.searchParams.get("limit") ?? "100");
     const intents = await service.listIntents(project, Number.isFinite(limit) ? limit : 100);
@@ -17,7 +17,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const project = await projectFromRequest(request);
+    const project = await projectFromRequest(request, "write");
     const input = createIntentSchema.parse(await readJson(request));
     const result = await service.createIntent(project, input);
     return Response.json({ intent: result.view, created: result.created }, { status: result.created ? 201 : 200 });

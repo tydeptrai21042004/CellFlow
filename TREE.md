@@ -1,4 +1,4 @@
-# CellFlow V0.2 repository tree
+# CellFlow V0.3 repository tree
 
 ```text
 CellFlow/
@@ -7,9 +7,10 @@ CellFlow/
 ├── .env.example
 ├── vercel.json
 ├── README.md
-├── V0.2_HARDENING.md
+├── PRODUCTION_READINESS_V0.3.md
 ├── IMPLEMENTATION_STATUS.md
-├── PROJECT_SPEC.md
+├── FUNDING_AND_VALIDATION.md
+├── SECURITY.md
 ├── SECURITY_MODEL.md
 ├── VERCEL_DEPLOYMENT.md
 ├── apps/
@@ -21,15 +22,21 @@ CellFlow/
 │   └── web/
 │       ├── app/api/
 │       │   ├── health/
+│       │   ├── ready/
 │       │   ├── setup/
 │       │   ├── internal/maintenance/
 │       │   └── v1/
 │       │       ├── intents/
+│       │       ├── metrics/
+│       │       ├── operations/
+│       │       ├── project-evidence/
 │       │       ├── webhooks/
 │       │       └── api-keys/
-│       ├── components/Dashboard.tsx
-│       ├── lib/workflow.ts
-│       └── workflows/reconcile-intent.ts
+│       ├── components/
+│       │   ├── Dashboard.tsx
+│       │   ├── IntegrationsPanel.tsx
+│       │   └── IntentDrawer.tsx
+│       └── lib/
 ├── packages/
 │   ├── core/src/
 │   ├── ccc/src/
@@ -37,19 +44,28 @@ CellFlow/
 │   ├── db/
 │   │   ├── migrations/001_init.sql
 │   │   ├── migrations/002_v02_hardening.sql
+│   │   ├── migrations/003_production_readiness.sql
 │   │   └── src/
 │   ├── assertions/src/
 │   └── webhooks/src/
 ├── workflows/
 │   ├── reconcile/src/
 │   └── webhook-delivery/src/
+├── docs/
+│   ├── api/openapi.yaml
+│   ├── operations/RUNBOOK.md
+│   └── funding/REVIEWER_VERIFICATION.md
 ├── tests/runtime/
 │   ├── core.test.mjs
 │   ├── assertions.test.mjs
 │   ├── hardening.test.mjs
+│   ├── stability-upgrade.test.mjs
+│   ├── production-readiness.test.mjs
+│   ├── ui.test.mjs
 │   └── tree.test.mjs
 ├── scripts/
 │   ├── migrate.mjs
+│   ├── release-preflight.mjs
 │   └── verify-tree.mjs
 └── .github/workflows/ci.yml
 ```

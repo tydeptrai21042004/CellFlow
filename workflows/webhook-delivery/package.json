@@ -1,12 +1,12 @@
 {
   "name": "@cellflow/webhook-delivery",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@cellflow/db": "0.2.0",
-    "@cellflow/webhooks": "0.2.0"
+    "@cellflow/db": "0.3.0",
+    "@cellflow/webhooks": "0.3.0"
   }
 }

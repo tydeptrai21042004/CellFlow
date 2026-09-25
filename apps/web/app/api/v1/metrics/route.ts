@@ -5,7 +5,7 @@ export const runtime = "nodejs";
 
 export async function GET(request: Request) {
   try {
-    const project = await projectFromRequest(request);
+    const project = await projectFromRequest(request, "read");
     return Response.json({ metrics: await service.projectMetrics(project) });
   } catch (error) {
     return errorResponse(error);

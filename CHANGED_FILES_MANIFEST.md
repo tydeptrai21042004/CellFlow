@@ -1,3 +1,5 @@
+> **Superseded for the current export:** see `V0.3_CHANGED_FILES.md` for the production/funding upgrade. This file is retained as the earlier stability-upgrade manifest.
+
 # Changed files manifest — stability/feature upgrade (2026-09-25)
 
 ## New files

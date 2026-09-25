@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { CellFlowError } from "@cellflow/core";
-import { CellFlowRepository, type ProjectRecord } from "@cellflow/db";
+import { CellFlowRepository, type ApiKeyScope, type ProjectRecord } from "@cellflow/db";
 
 export function hashApiKey(key: string): string {
   return createHash("sha256").update(key, "utf8").digest("hex");
@@ -14,19 +14,36 @@ export function generateApiKey(): { id: string; key: string; prefix: string; has
 export async function authenticateBearer(
   authorization: string | null,
   repository = new CellFlowRepository(),
+  requiredScope: ApiKeyScope = "read",
 ): Promise<ProjectRecord> {
   if (!authorization?.startsWith("Bearer ")) {
     throw new CellFlowError("AUTH_INVALID", "Missing Bearer API key", 401);
   }
   const key = authorization.slice(7).trim();
   if (key.length < 20) throw new CellFlowError("AUTH_INVALID", "Invalid API key", 401);
-  const project = await repository.findProjectByApiKeyHash(hashApiKey(key));
-  if (!project) throw new CellFlowError("AUTH_INVALID", "Invalid or revoked API key", 401);
+  const auth = await repository.findAuthByApiKeyHash(hashApiKey(key));
+  if (!auth) throw new CellFlowError("AUTH_INVALID", "Invalid, revoked, or expired API key", 401);
+
+  const scopes = new Set(auth.key.scopes);
+  const permitted = scopes.has("admin") || scopes.has(requiredScope);
+  if (!permitted) {
+    throw new CellFlowError(
+      "AUTH_SCOPE_REQUIRED",
+      `API key requires ${requiredScope} scope`,
+      403,
+      { requiredScope, grantedScopes: auth.key.scopes },
+    );
+  }
 
   const limit = Number(process.env.CELLFLOW_RATE_LIMIT_PER_MINUTE ?? "240");
-  const allowed = await repository.consumeRateLimit(project.id, "api", Number.isFinite(limit) ? limit : 240, 60);
-  if (!allowed) throw new CellFlowError("RATE_LIMITED", "Project API rate limit exceeded", 429);
-  return project;
+  const allowed = await repository.consumeRateLimit(
+    auth.project.id,
+    `api:${auth.key.id}`,
+    Number.isFinite(limit) ? limit : 240,
+    60,
+  );
+  if (!allowed) throw new CellFlowError("RATE_LIMITED", "API key rate limit exceeded", 429);
+  return auth.project;
 }
 
 export function requireBootstrapToken(value: string | null): void {

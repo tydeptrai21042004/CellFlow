@@ -5,7 +5,7 @@ export const runtime = "nodejs";
 
 export async function DELETE(request: Request, context: { params: Promise<{ endpointId: string }> }) {
   try {
-    const project = await projectFromRequest(request);
+    const project = await projectFromRequest(request, "admin");
     const { endpointId } = await context.params;
     await service.disableWebhook(project, endpointId);
     return new Response(null, { status: 204 });

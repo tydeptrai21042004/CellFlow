@@ -4,7 +4,7 @@ export default function Home() {
   return (
     <main>
       <header className="topbar shell">
-        <a className="brand" href="#top" aria-label="CellFlow home"><span className="brand-mark" aria-hidden="true">CF</span><span>CellFlow</span><small>v0.2</small></a>
+        <a className="brand" href="#top" aria-label="CellFlow home"><span className="brand-mark" aria-hidden="true">CF</span><span>CellFlow</span><small>v0.3</small></a>
         <nav aria-label="Primary navigation"><a href="#operations">Operations</a><a href="#integrations">Integrations</a><a href="#example">Example</a></nav>
         <span className="network-chip"><span /> CKB operations</span>
       </header>

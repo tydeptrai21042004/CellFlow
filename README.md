@@ -4,7 +4,7 @@
 
 CellFlow sits after transaction construction/signing and before application business finalization. It does not hold keys. It persists application intent, tracks CKB transaction state, survives serverless restarts, handles ambiguous broadcast outcomes, waits for configurable confirmation depth, detects reorg evidence, verifies expected output Cells, and emits signed webhooks.
 
-## Implemented V0.2 MVP
+## Implemented V0.3 production candidate
 
 This repository now contains a runnable implementation rather than only the original blueprint:
 
@@ -31,20 +31,32 @@ This repository now contains a runnable implementation rather than only the orig
 - durable operator notes recorded in the intent audit timeline and signed webhook outbox;
 - bounded JSON request bodies with deterministic malformed/oversized request errors;
 - multi-endpoint CKB RPC failover via primary, single fallback, or comma-separated fallback lists;
-- 54 deterministic lifecycle, reorg, assertion, hardening, stability, UI-safety and deployment-contract tests.
+- least-privilege API keys with `read` / `write` / `admin` scopes and optional expiry;
+- per-process RPC circuit breaking so unhealthy endpoints cool down instead of being hammered on every observation;
+- deployment readiness checks that validate database, secrets, RPC reachability, expected CKB network identity, optional pinned genesis hash, and production setup lock;
+- operational backlog metrics for due/leased reconciliation, stale intents, webhook queues, API-key expiry, and last event activity;
+- retryable webhook dead letters from both API and operations UI;
+- machine-readable project-level evidence exports for reviewer/audit snapshots without exposing API-key material;
+- security headers, request correlation IDs, structured server-side error logging, and no-store/no-index API responses;
+- reproducible-release guardrails and a CI contract that requires a committed dependency lockfile before release;
+- 65 deterministic lifecycle, reorg, assertion, hardening, stability, production-readiness, UI-safety and deployment-contract tests.
 
-## Stability hardening added September 25, 2026
+## Production hardening added September 25, 2026
 
-The current tree adds operational safeguards on top of V0.2 without changing the core transaction model:
+V0.3 keeps the same non-custodial transaction model and adds a production-oriented control plane:
 
-- `/api/ready` checks database access, CKB RPC reachability, and critical runtime-secret presence for deployment readiness;
-- RPC configuration can fail over across `CKB_RPC_URL`, `CKB_RPC_FALLBACK_URL`, and comma-separated `CKB_RPC_FALLBACK_URLS`;
+- `/api/ready` validates database access, secret strength/presence, CKB RPC connectivity, configured network identity, optional genesis pinning, production setup lock, and fallback topology;
+- RPC configuration can fail over across `CKB_RPC_URL`, `CKB_RPC_FALLBACK_URL`, and comma-separated `CKB_RPC_FALLBACK_URLS`, with timeout bounds and endpoint circuit breaking;
+- API keys are least-privilege and can be scoped to `read`, `write`, and/or `admin`, with optional expiry and last-live-admin safety on revocation;
 - maintenance uses isolated task settlement so webhook delivery failure does not suppress reconciliation or cleanup;
 - JSON request parsing enforces a configurable body ceiling and returns stable API errors for malformed/oversized input;
-- intent drawers can append durable operator notes to the audit timeline;
-- webhook management exposes delivery health and supports disabling an endpoint while retaining delivery history.
+- operator notes are durable audit events and participate in the signed webhook outbox;
+- webhook management exposes delivery health, non-destructive disable, and failed-delivery replay;
+- `/api/v1/operations` exposes bounded operational backlog/staleness indicators;
+- `/api/v1/project-evidence` exposes a read-only hashed reviewer snapshot; an explicit admin `POST` records a durable audit/export row without leaking API-key material;
+- all API failures carry request IDs, and the web layer emits defensive browser/security headers.
 
-See `STABILITY_UPGRADE_2026-09-25.md` for the implementation notes.
+See `PRODUCTION_READINESS_V0.3.md`, `SECURITY.md`, `docs/operations/RUNBOOK.md`, and `docs/funding/REVIEWER_VERIFICATION.md`.
 
 ## Architecture
 
@@ -142,9 +154,14 @@ CKB_NETWORK=testnet
 CKB_RPC_URL=https://testnet.ckbapp.dev/rpc
 CKB_RPC_FALLBACK_URLS=https://rpc-backup-1.example/rpc,https://rpc-backup-2.example/rpc
 CKB_RPC_TIMEOUT_MS=10000
+CKB_RPC_CIRCUIT_FAILURES=2
+CKB_RPC_CIRCUIT_COOLDOWN_MS=30000
+# Pin this to the expected chain genesis before production/mainnet rollout.
+CKB_EXPECTED_GENESIS_HASH=
 CELLFLOW_ENCRYPTION_KEY=<at-least-32-random-characters>
 CELLFLOW_BOOTSTRAP_TOKEN=<different-bootstrap-token>
 CELLFLOW_SETUP_ENABLED=true
+# Flip to false immediately after initial provisioning in production.
 CELLFLOW_RATE_LIMIT_PER_MINUTE=240
 CELLFLOW_MAX_JSON_BODY_BYTES=262144
 CRON_SECRET=<different-random-secret>
@@ -165,6 +182,19 @@ npm run dev
 ```
 
 Open `http://localhost:3000`. The collapsible first-deploy setup section accepts `CELLFLOW_BOOTSTRAP_TOKEN`; the server-only encryption key never enters the browser. The generated `cf_live_...` API key is shown once and kept only in page memory. Set `CELLFLOW_SETUP_ENABLED=false` after production provisioning.
+
+## Production release gate
+
+This repository is a **production candidate**, not a claim of externally proven mainnet safety. Before a public production/mainnet release:
+
+1. generate and commit `package-lock.json` with the pinned package versions in this tree;
+2. use `npm ci`, then run `npm test`, `npm run typecheck`, and `npm run build` in a network-enabled CI runner;
+3. apply migrations through `003_production_readiness.sql` to a staging database and exercise backup/restore;
+4. pin `CKB_EXPECTED_GENESIS_HASH`, configure at least two independently operated production RPC endpoints, and keep setup disabled after bootstrap;
+5. complete a real CKB testnet ambiguity/reorg/recovery exercise plus expected-Cell verification;
+6. rotate bootstrap/API/webhook/encryption credentials and perform an external security review before mainnet.
+
+The exported repository passes its deterministic offline suite, but the source environment used to prepare this ZIP did not have registry access, so a dependency-resolved `npm ci` / full workspace typecheck / Next.js production build could not be honestly re-run here.
 
 ## Operations UI
 
@@ -242,7 +272,7 @@ The helper uses CCC's deterministic `Transaction.hash()` before invoking CKB RPC
 
 ## Expected Cell assertions
 
-V0.2 supports narrow, auditable assertions. Use `mode: "created"` to prove the committed transaction created the Cell, or `mode: "live"` to additionally verify the current OutPoint with CKB `get_live_cell`:
+V0.3 keeps the narrow, auditable expected-Cell assertion model introduced in V0.2. Use `mode: "created"` to prove the committed transaction created the Cell, or `mode: "live"` to additionally verify the current OutPoint with CKB `get_live_cell`:
 
 ```json
 {
@@ -290,20 +320,22 @@ Webhook destinations are DNS-resolved immediately before delivery, private/link-
 
 ## Verification
 
-Core state-machine tests do not require a database:
+The deterministic verification suite does not require a live PostgreSQL or CKB node:
 
 ```bash
-npm test
+npm run verify
 ```
 
-Full CI after dependency installation runs:
+Before a release, run the reproducibility gate and then the dependency-resolved checks in a clean runner:
 
 ```bash
+npm run release:check
+npm ci
 npm run typecheck
 npm run build
 ```
 
-The dependency-free suite covers pre-broadcast identity, ambiguous recovery, confirmation depth, canonical reorg evidence, stale-node regressions, transition invariants, tx-hash validation, created/live Cell assertions, lease/outbox hardening invariants, browser secret handling and repository completeness.
+The 65-test suite covers pre-broadcast identity, ambiguous recovery, confirmation depth, canonical reorg evidence, stale-node regressions, transition invariants, tx-hash validation, created/live Cell assertions, leases/outbox behavior, RPC/readiness controls, scoped credentials, reviewer evidence, webhook recovery, browser secret handling and repository completeness.
 
 ## Vercel deployment
 
@@ -313,9 +345,9 @@ See `VERCEL_DEPLOYMENT.md`.
 
 ## Repository map
 
-See `TREE.md` and `IMPLEMENTATION_STATUS.md` for the implemented files and remaining production-hardening items.
+See `TREE.md`, `IMPLEMENTATION_STATUS.md`, `PRODUCTION_READINESS_V0.3.md`, and `FUNDING_AND_VALIDATION.md` for the implemented files, release gates, reviewer evidence and milestone strategy.
 
 
-## V0.2 hardening details
+## Hardening history
 
-See `V0.2_HARDENING.md` for the concurrency, canonical-chain, live-Cell, security and deployment changes introduced in this export.
+See `V0.2_HARDENING.md` for the concurrency/canonical-chain foundation and `PRODUCTION_READINESS_V0.3.md` for the current credential, RPC, operations, evidence and release-control layer.

@@ -5,7 +5,7 @@ export const runtime = "nodejs";
 
 export async function GET(request: Request) {
   try {
-    const project = await projectFromRequest(request);
+    const project = await projectFromRequest(request, "admin");
     return Response.json({ webhooks: await service.listWebhooks(project) });
   } catch (error) {
     return errorResponse(error);
@@ -14,7 +14,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const project = await projectFromRequest(request);
+    const project = await projectFromRequest(request, "admin");
     const input = webhookSchema.parse(await readJson(request));
     const webhook = await service.createWebhook(project, input.url);
     return Response.json({ webhook }, { status: 201 });

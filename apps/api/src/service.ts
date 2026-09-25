@@ -12,10 +12,12 @@ import {
   CellFlowRepository,
   OptimisticConcurrencyError,
   snapshotFromExecution,
+  type ApiKeyScope,
   type IntentAggregate,
+  type OperationalHealthRecord,
   type ProjectRecord,
 } from "@cellflow/db";
-import { reconcileIntent } from "@cellflow/reconcile";
+import { CkbRpcClient, reconcileIntent } from "@cellflow/reconcile";
 import { encryptSecret, validateWebhookUrl } from "@cellflow/webhooks";
 import { generateApiKey } from "./auth.ts";
 
@@ -53,6 +55,28 @@ export class CellFlowService {
         allowHttpLocalhost: process.env.NODE_ENV !== "production",
       });
       rpcUrl = validated.toString();
+      try {
+        const info = await new CkbRpcClient([rpcUrl]).getBlockchainInfo();
+        const chain = typeof info.chain === "string" ? info.chain : "";
+        const expectedChain = input.network === "mainnet" ? "ckb" : input.network === "testnet" ? "ckb_testnet" : null;
+        if (expectedChain && chain !== expectedChain) {
+          throw new CellFlowError(
+            "RPC_RESPONSE_INVALID",
+            `RPC network mismatch: project expects ${input.network} but endpoint reports ${chain || "unknown"}`,
+            400,
+          );
+        }
+        if (info.is_initial_block_download === true && process.env.NODE_ENV === "production") {
+          throw new CellFlowError("RPC_UNAVAILABLE", "RPC node is still in initial block download", 503);
+        }
+      } catch (error) {
+        if (error instanceof CellFlowError) throw error;
+        throw new CellFlowError(
+          "RPC_UNAVAILABLE",
+          "Unable to verify the configured CKB RPC endpoint",
+          503,
+        );
+      }
     }
     const apiKey = generateApiKey();
     const project = await this.repository.createProject({
@@ -102,6 +126,61 @@ export class CellFlowService {
 
   async projectMetrics(project: ProjectRecord): Promise<{ total: number; active: number; confirmed: number; attention: number }> {
     return this.repository.getProjectMetrics(project.id);
+  }
+
+  async operationalHealth(project: ProjectRecord): Promise<OperationalHealthRecord> {
+    const staleMinutes = Number(process.env.CELLFLOW_STALE_INTENT_MINUTES ?? "10");
+    return this.repository.getOperationalHealth(
+      project.id,
+      Number.isFinite(staleMinutes) ? staleMinutes : 10,
+    );
+  }
+
+  async projectEvidence(project: ProjectRecord, persist = false): Promise<Record<string, unknown>> {
+    const [metrics, operations, webhooks] = await Promise.all([
+      this.projectMetrics(project),
+      this.operationalHealth(project),
+      this.listWebhooks(project),
+    ]);
+    const document = {
+      schemaVersion: "cellflow-project-evidence-v1",
+      generatedAt: new Date().toISOString(),
+      project: {
+        id: project.id,
+        name: project.name,
+        network: project.network,
+        confirmationPolicy: project.confirmationPolicy,
+      },
+      release: {
+        version: "0.3.0",
+        commitSha: process.env.VERCEL_GIT_COMMIT_SHA ?? process.env.CELLFLOW_RELEASE_SHA ?? null,
+        environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? null,
+      },
+      metrics,
+      operations,
+      integrations: {
+        webhookEndpoints: webhooks.map((item) => ({
+          id: item.id,
+          enabled: item.enabled,
+          deliveredCount: item.deliveredCount,
+          failedCount: item.failedCount,
+          pendingCount: item.pendingCount,
+          lastDeliveryAt: item.lastDeliveryAt,
+        })),
+        apiKeys: {
+          active: operations.activeApiKeys,
+          expiringWithin7Days: operations.expiringApiKeys7d,
+        },
+      },
+    };
+    const sha256 = createHash("sha256").update(stable(document)).digest("hex");
+    if (!persist) return { ...document, sha256, persisted: false };
+    const record = await this.repository.recordProjectEvidenceExport({
+      projectId: project.id,
+      sha256,
+      document,
+    });
+    return { ...document, sha256, persisted: true, exportId: record.id, exportedAt: record.createdAt };
   }
 
   async listIntents(project: ProjectRecord, limit?: number): Promise<Record<string, unknown>[]> {
@@ -249,12 +328,31 @@ export class CellFlowService {
     return { ...document, sha256, exportId: exportRecord.id, exportedAt: exportRecord.createdAt };
   }
 
-  async createApiKey(project: ProjectRecord, label: string): Promise<{ id: string; prefix: string; label: string; apiKey: string }> {
+  async createApiKey(
+    project: ProjectRecord,
+    input: { label: string; scopes: ApiKeyScope[]; expiresInDays: number | null },
+  ): Promise<{ id: string; prefix: string; label: string; scopes: ApiKeyScope[]; expiresAt: string | null; apiKey: string }> {
     const apiKey = generateApiKey();
+    const expiresAt = input.expiresInDays === null
+      ? null
+      : new Date(Date.now() + input.expiresInDays * 24 * 60 * 60 * 1000);
     await this.repository.createApiKey({
-      projectId: project.id, id: apiKey.id, prefix: apiKey.prefix, hash: apiKey.hash, label,
+      projectId: project.id,
+      id: apiKey.id,
+      prefix: apiKey.prefix,
+      hash: apiKey.hash,
+      label: input.label,
+      scopes: input.scopes,
+      expiresAt,
     });
-    return { id: apiKey.id, prefix: apiKey.prefix, label, apiKey: apiKey.key };
+    return {
+      id: apiKey.id,
+      prefix: apiKey.prefix,
+      label: input.label,
+      scopes: input.scopes,
+      expiresAt: expiresAt?.toISOString() ?? null,
+      apiKey: apiKey.key,
+    };
   }
 
   async listApiKeys(project: ProjectRecord) {
@@ -299,6 +397,14 @@ export class CellFlowService {
       pendingCount: endpoint.pendingCount,
       lastDeliveryAt: endpoint.lastDeliveryAt,
     }));
+  }
+
+  async retryWebhookFailures(project: ProjectRecord, endpointId?: string): Promise<number> {
+    if (endpointId) {
+      const endpoint = await this.repository.getWebhookEndpoint(project.id, endpointId);
+      if (!endpoint) throw new CellFlowError("WEBHOOK_NOT_FOUND", "Webhook endpoint not found", 404);
+    }
+    return this.repository.retryFailedWebhookDeliveries(project.id, endpointId);
   }
 
   async disableWebhook(project: ProjectRecord, endpointId: string): Promise<void> {

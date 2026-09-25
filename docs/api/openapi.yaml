@@ -1,8 +1,12 @@
 openapi: 3.1.0
 info:
   title: CellFlow API
-  version: 0.2.0
-  description: Durable CKB intent lifecycle, canonical-chain reconciliation, confirmation, live-Cell verification, evidence, and signed webhook delivery.
+  version: 0.3.0
+  description: >-
+    Durable CKB intent lifecycle, canonical-chain reconciliation, confirmation,
+    expected-Cell verification, operations health, reviewer evidence, and signed
+    webhook delivery. API keys are project-scoped and may grant read, write,
+    and/or admin access.
 servers:
   - url: https://your-cellflow.vercel.app
 security:
@@ -11,7 +15,7 @@ paths:
   /api/health:
     get:
       security: []
-      summary: Process and database health
+      summary: Process and database liveness
       responses:
         '200': { description: Healthy }
         '503': { description: Database unavailable }
@@ -22,11 +26,27 @@ paths:
       responses:
         '200': { description: RPC reachable }
         '503': { description: RPC unavailable }
+  /api/ready:
+    get:
+      security: []
+      summary: Deployment readiness
+      description: >-
+        Checks database access, runtime-secret configuration, CKB RPC reachability,
+        configured network identity, optional genesis pinning, production setup lock,
+        and RPC fallback topology. A liveness endpoint is not a substitute for this
+        readiness endpoint.
+      responses:
+        '200': { description: Ready; warnings may still be present }
+        '503': { description: One or more release/runtime readiness checks failed }
   /api/setup:
     post:
       security: []
       summary: Create a project and first API key
-      description: Requires CELLFLOW_BOOTSTRAP_TOKEN as an Authorization Bearer credential. In production the route is disabled unless CELLFLOW_SETUP_ENABLED=true. The encryption key is never sent to the browser.
+      description: >-
+        Requires CELLFLOW_BOOTSTRAP_TOKEN as an Authorization Bearer credential.
+        In production the route is disabled unless CELLFLOW_SETUP_ENABLED=true.
+        Disable setup immediately after provisioning. The first key receives
+        read/write/admin scope and its secret is returned once.
       parameters:
         - in: header
           name: Authorization
@@ -54,11 +74,15 @@ paths:
                         mode: { const: depth }
                         blocks: { type: integer, minimum: 1 }
       responses:
-        '201': { description: Project created }
+        '201': { description: Project created and bootstrap API key returned once }
+        '400': { $ref: '#/components/responses/Error' }
         '401': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+
   /api/v1/intents:
     get:
       summary: List recent intents
+      description: Requires read scope.
       parameters:
         - in: query
           name: limit
@@ -66,9 +90,12 @@ paths:
       responses:
         '200': { description: Intent list }
         '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
     post:
       summary: Create an idempotent business intent
-      description: Reusing an intentId with identical metadata/assertions returns the existing intent. Reusing it with different input returns 409.
+      description: >-
+        Requires write scope. Reusing an intentId with identical metadata/assertions
+        returns the existing intent. Reusing it with different input returns 409.
       requestBody:
         required: true
         content:
@@ -77,18 +104,25 @@ paths:
       responses:
         '200': { description: Existing idempotent intent }
         '201': { description: Intent created }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
   /api/v1/intents/{intentId}:
     get:
-      summary: Read current lifecycle state and event-derived status
+      summary: Read current lifecycle state and audit-derived status
+      description: Requires read scope.
       parameters:
         - $ref: '#/components/parameters/IntentId'
       responses:
         '200': { description: Intent }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
   /api/v1/intents/{intentId}/prepare:
     post:
       summary: Persist a deterministic transaction hash before broadcasting
+      description: Requires write scope.
       parameters:
         - $ref: '#/components/parameters/IntentId'
       requestBody:
@@ -98,31 +132,40 @@ paths:
             schema: { $ref: '#/components/schemas/TxHash' }
       responses:
         '200': { description: Transaction prepared for tracked broadcast }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
   /api/v1/intents/{intentId}/broadcasting:
     post:
       summary: Mark a persisted transaction as entering a broadcast attempt
+      description: Requires write scope.
       parameters:
         - $ref: '#/components/parameters/IntentId'
       responses:
         '200': { description: State updated }
+        '403': { $ref: '#/components/responses/Error' }
   /api/v1/intents/{intentId}/submitted:
     post:
-      summary: Mark RPC broadcast as acknowledged and start durable reconciliation
+      summary: Mark broadcast acknowledged and start durable reconciliation
+      description: Requires write scope.
       parameters:
         - $ref: '#/components/parameters/IntentId'
       responses:
         '200': { description: State updated }
+        '403': { $ref: '#/components/responses/Error' }
   /api/v1/intents/{intentId}/ambiguous:
     post:
-      summary: Mark broadcast outcome unknown and reconcile by precomputed tx hash
+      summary: Mark broadcast outcome unknown and reconcile by precomputed hash
+      description: Requires write scope; does not instruct clients to blindly rebroadcast.
       parameters:
         - $ref: '#/components/parameters/IntentId'
       responses:
         '200': { description: State updated }
+        '403': { $ref: '#/components/responses/Error' }
   /api/v1/intents/{intentId}/track:
     post:
       summary: Track an already-broadcast transaction hash
+      description: Requires write scope.
       parameters:
         - $ref: '#/components/parameters/IntentId'
       requestBody:
@@ -132,39 +175,102 @@ paths:
             schema: { $ref: '#/components/schemas/TxHash' }
       responses:
         '200': { description: Tracking started }
+        '403': { $ref: '#/components/responses/Error' }
   /api/v1/intents/{intentId}/reconcile:
     post:
       summary: Run one immediate CKB reconciliation step
+      description: Requires write scope.
       parameters:
         - $ref: '#/components/parameters/IntentId'
       responses:
         '200': { description: Reconciliation result }
-  /api/v1/intents/{intentId}/evidence:
-    get:
-      summary: Export deterministic lifecycle evidence and SHA-256
+        '403': { $ref: '#/components/responses/Error' }
+  /api/v1/intents/{intentId}/notes:
+    post:
+      summary: Append a durable operator note to the intent audit trail
+      description: Requires write scope. The note is also eligible for webhook outbox delivery.
       parameters:
         - $ref: '#/components/parameters/IntentId'
-      responses:
-        '200': { description: Evidence document }
-  /api/v1/api-keys:
-    get:
-      summary: List API key metadata (never returns key material)
-      responses:
-        '200': { description: API key metadata }
-    post:
-      summary: Create a replacement/rotated API key; secret material is returned once
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               type: object
+              required: [note]
               properties:
-                label: { type: string, maxLength: 80, default: rotated }
+                note: { type: string, minLength: 1, maxLength: 2000 }
       responses:
-        '201': { description: API key created }
+        '201': { description: Note appended }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /api/v1/intents/{intentId}/evidence:
+    get:
+      summary: Export deterministic lifecycle evidence and SHA-256
+      description: Requires read scope.
+      parameters:
+        - $ref: '#/components/parameters/IntentId'
+      responses:
+        '200': { description: Intent evidence document }
+        '403': { $ref: '#/components/responses/Error' }
+
+  /api/v1/metrics:
+    get:
+      summary: Project-wide lifecycle metrics
+      description: Requires read scope. Aggregates from the database rather than the dashboard page limit.
+      responses:
+        '200': { description: Project metrics }
+        '403': { $ref: '#/components/responses/Error' }
+  /api/v1/operations:
+    get:
+      summary: Operational backlog and staleness indicators
+      description: >-
+        Requires read scope. Returns due/leased reconciliation counts, stale active
+        intents, webhook backlog, active/expiring API-key counts, and recent activity.
+      responses:
+        '200': { description: Operational health snapshot }
+        '403': { $ref: '#/components/responses/Error' }
+  /api/v1/project-evidence:
+    get:
+      summary: Export a read-only hashed project-level reviewer snapshot
+      description: >-
+        Requires read scope. Returns project metrics, release identity and operational
+        state without mutating durable state or returning API-key secrets/key metadata.
+      responses:
+        '200': { description: Non-persisted project evidence document and SHA-256 }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      summary: Record a hashed project-level evidence snapshot
+      description: Requires admin scope because recording the export mutates durable audit state.
+      responses:
+        '201': { description: Persisted project evidence document, SHA-256, export ID and timestamp }
+        '403': { $ref: '#/components/responses/Error' }
+
+  /api/v1/api-keys:
+    get:
+      summary: List API-key metadata
+      description: Requires admin scope; never returns key secret material.
+      responses:
+        '200': { description: API-key metadata including scopes and expiry }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      summary: Create a scoped/expiring API key
+      description: Requires admin scope. Secret material is returned once.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateApiKey' }
+      responses:
+        '201': { description: API key created; secret returned once }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
   /api/v1/api-keys/{keyId}:
     delete:
-      summary: Revoke an API key (the last active key cannot be revoked)
+      summary: Revoke an API key
+      description: >-
+        Requires admin scope. Revocation guards against removing the last live usable
+        key according to repository invariants; expired keys do not count as live keys.
       parameters:
         - in: path
           name: keyId
@@ -172,14 +278,21 @@ paths:
           schema: { type: string }
       responses:
         '204': { description: API key revoked }
+        '403': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
+
   /api/v1/webhooks:
     get:
-      summary: List webhook endpoints
+      summary: List webhook endpoints and delivery health
+      description: Requires admin scope.
       responses:
-        '200': { description: Endpoints }
+        '200': { description: Endpoints and delivery counters }
+        '403': { $ref: '#/components/responses/Error' }
     post:
-      summary: Create a webhook endpoint and one-time signing secret
+      summary: Create or re-enable a webhook endpoint
+      description: >-
+        Requires admin scope. Returns a one-time signing secret. Re-adding an existing
+        disabled endpoint re-enables it and rotates its secret.
       requestBody:
         required: true
         content:
@@ -187,15 +300,45 @@ paths:
             schema:
               type: object
               required: [url]
-              properties: { url: { type: string, format: uri } }
+              properties:
+                url: { type: string, format: uri }
       responses:
-        '201': { description: Webhook created }
+        '201': { description: Webhook created or re-enabled }
         '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /api/v1/webhooks/{endpointId}:
+    delete:
+      summary: Disable a webhook endpoint without deleting delivery history
+      description: Requires admin scope.
+      parameters:
+        - $ref: '#/components/parameters/EndpointId'
+      responses:
+        '204': { description: Endpoint disabled }
+        '403': { $ref: '#/components/responses/Error' }
   /api/v1/webhooks/test:
     post:
-      summary: Queue a signed test delivery to configured webhook endpoints
+      summary: Queue a signed test delivery
+      description: Requires admin scope.
       responses:
         '202': { description: Test delivery queued }
+        '403': { $ref: '#/components/responses/Error' }
+  /api/v1/webhooks/retry:
+    post:
+      summary: Retry failed webhook deliveries
+      description: Requires admin scope. May target one endpoint or all failed deliveries for the project.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                endpointId: { type: string, format: uuid }
+      responses:
+        '200': { description: Failed deliveries re-queued }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -208,7 +351,30 @@ components:
       name: intentId
       required: true
       schema: { type: string, minLength: 1, maxLength: 128 }
+    EndpointId:
+      in: path
+      name: endpointId
+      required: true
+      schema: { type: string, format: uuid }
   schemas:
+    ApiKeyScope:
+      type: string
+      enum: [read, write, admin]
+    CreateApiKey:
+      type: object
+      properties:
+        label: { type: string, maxLength: 80, default: rotated }
+        scopes:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/ApiKeyScope' }
+          default: [read, write]
+        expiresInDays:
+          oneOf:
+            - { type: integer, minimum: 1, maximum: 365 }
+            - { type: 'null' }
+          default: 90
     TxHash:
       type: object
       required: [txHash]
@@ -248,15 +414,25 @@ components:
           default: []
     Error:
       type: object
+      required: [error]
       properties:
         error:
           type: object
+          required: [code, message, requestId]
           properties:
             code: { type: string }
             message: { type: string }
+            requestId:
+              type: string
+              description: Correlation ID also returned in the x-request-id response header.
+            details: {}
   responses:
     Error:
       description: Structured CellFlow error
+      headers:
+        x-request-id:
+          schema: { type: string }
+          description: Correlation identifier for server logs and support/debugging.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }

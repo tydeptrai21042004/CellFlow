@@ -30,7 +30,7 @@ The example includes copyable REST/cURL and CCC-helper integration snippets.
 
 ## Stability coverage
 
-The deterministic test suite now contains **54 tests**:
+The deterministic test suite now contains **65 tests**:
 
 - 22 core lifecycle, reorg, confirmation and validation tests;
 - 11 expected-Cell/live-Cell assertion tests;

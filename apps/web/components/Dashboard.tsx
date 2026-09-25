@@ -23,6 +23,7 @@ type Intent = {
 };
 
 type Health = { database: "checking" | "healthy" | "down"; rpc: "checking" | "healthy" | "down"; readiness: "checking" | "healthy" | "down"; tip?: string; latencyMs?: number; };
+type Operations = { dueReconciliations: number; leasedReconciliations: number; staleActiveIntents: number; oldestActiveAgeSeconds: number | null; pendingWebhooks: number; failedWebhooks: number; activeApiKeys: number; expiringApiKeys7d: number; lastEventAt: string | null; };
 
 const txHashPattern = /^0x[0-9a-fA-F]{64}$/;
 
@@ -33,6 +34,7 @@ export default function Dashboard() {
   const [createdKey, setCreatedKey] = useState("");
   const [intents, setIntents] = useState<Intent[]>([]);
   const [serverMetrics, setServerMetrics] = useState<{ total: number; active: number; confirmed: number; attention: number } | null>(null);
+  const [operations, setOperations] = useState<Operations | null>(null);
   const [intentId, setIntentId] = useState("");
   const [txHash, setTxHash] = useState("");
   const [message, setMessage] = useState("Connect a project API key to load live operational data. Keys remain only in page memory.");
@@ -64,12 +66,14 @@ export default function Dashboard() {
     if (!canLoad) return;
     if (!silent) setBusy(true);
     try {
-      const [body, metricBody] = await Promise.all([
+      const [body, metricBody, operationBody] = await Promise.all([
         jsonRequest<{ intents: Intent[] }>("/api/v1/intents?limit=200", apiKey),
         jsonRequest<{ metrics: { total: number; active: number; confirmed: number; attention: number } }>("/api/v1/metrics", apiKey),
+        jsonRequest<{ operations: Operations }>("/api/v1/operations", apiKey),
       ]);
       setIntents(body.intents ?? []);
       setServerMetrics(metricBody.metrics);
+      setOperations(operationBody.operations);
       if (!silent) setMessage(`${body.intents?.length ?? 0} recent intent(s) loaded${metricBody.metrics.total > (body.intents?.length ?? 0) ? ` of ${metricBody.metrics.total} total` : ""}.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Failed to load intents");
@@ -135,6 +139,20 @@ export default function Dashboard() {
     } catch (error) { setMessage(error instanceof Error ? error.message : "Evidence export failed"); }
   }
 
+  async function exportProjectEvidence() {
+    try {
+      const body = await jsonRequest<{ evidence: Record<string, unknown> }>("/api/v1/project-evidence", apiKey);
+      const blob = new Blob([JSON.stringify(body.evidence, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `cellflow-project-evidence-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setMessage("Project evidence snapshot exported with a SHA-256 integrity fingerprint.");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Project evidence export failed"); }
+  }
+
   async function openDetail(id: string, announce = true) {
     try {
       const body = await jsonRequest<{ intent: IntentDetail }>(`/api/v1/intents/${encodeURIComponent(id)}`, apiKey);
@@ -173,6 +191,19 @@ export default function Dashboard() {
         <article className="metric-card metric-success"><span>Confirmed</span><strong>{metrics.confirmed}</strong><small>confirmation policy satisfied</small></article>
         <article className={`metric-card ${metrics.attention > 0 ? "metric-danger" : ""}`}><span>Needs attention</span><strong>{metrics.attention}</strong><small>unknown, rejected, conflicted or reorged</small></article>
       </div>
+
+      {operations && <section className="panel" aria-labelledby="production-health-title">
+        <div className="section-heading">
+          <div><div className="kicker">Production health</div><h2 id="production-health-title">Operational guardrails</h2><p>Backlog, stale-work and integration signals that help operators detect silent degradation before it becomes user-facing.</p></div>
+          <button className="secondary" type="button" disabled={busy || !canLoad} onClick={exportProjectEvidence}>Export project evidence</button>
+        </div>
+        <div className="metric-grid">
+          <article className={`metric-card ${operations.dueReconciliations > 25 ? "metric-danger" : ""}`}><span>Reconcile backlog</span><strong>{operations.dueReconciliations}</strong><small>{operations.leasedReconciliations} currently leased</small></article>
+          <article className={`metric-card ${operations.staleActiveIntents > 0 ? "metric-danger" : "metric-success"}`}><span>Stale active intents</span><strong>{operations.staleActiveIntents}</strong><small>older than the observation threshold</small></article>
+          <article className={`metric-card ${operations.failedWebhooks > 0 ? "metric-danger" : "metric-success"}`}><span>Failed webhooks</span><strong>{operations.failedWebhooks}</strong><small>{operations.pendingWebhooks} pending or retrying</small></article>
+          <article className={`metric-card ${operations.expiringApiKeys7d > 0 ? "metric-danger" : ""}`}><span>Active API keys</span><strong>{operations.activeApiKeys}</strong><small>{operations.expiringApiKeys7d} expire within 7 days</small></article>
+        </div>
+      </section>}
 
       <section id="operations" className="panel operations-panel" aria-labelledby="operations-title">
         <div className="section-heading">

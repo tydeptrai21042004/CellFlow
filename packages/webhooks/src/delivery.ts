@@ -70,7 +70,7 @@ export async function deliverWebhook(
       ...destination,
       headers: {
         "content-type": "application/json",
-        "user-agent": "CellFlow/0.2",
+        "user-agent": "CellFlow/0.3",
         "x-cellflow-signature": `v1=${signature}`,
         "x-cellflow-timestamp": String(timestamp),
         "x-cellflow-event-id": delivery.eventId,

@@ -5,7 +5,7 @@ export const runtime = "nodejs";
 
 export async function POST(request: Request, context: { params: Promise<{ intentId: string }> }) {
   try {
-    const project = await projectFromRequest(request);
+    const project = await projectFromRequest(request, "write");
     const { intentId } = await context.params;
     const { note } = operatorNoteSchema.parse(await readJson(request));
     const intent = await service.addOperatorNote(project, intentId, note);

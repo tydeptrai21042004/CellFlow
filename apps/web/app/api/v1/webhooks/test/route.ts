@@ -8,7 +8,7 @@ export const maxDuration = 30;
 
 export async function POST(request: Request) {
   try {
-    const project = await projectFromRequest(request);
+    const project = await projectFromRequest(request, "admin");
     const eventId = randomUUID();
     const queued = await repository.enqueueWebhookDeliveries({
       projectId: project.id,

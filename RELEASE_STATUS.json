@@ -1,0 +1,110 @@
+{
+  "schemaVersion": "cellflow-release-preflight-v1",
+  "version": "0.3.0",
+  "generatedAt": "2026-09-25T10:24:00.925Z",
+  "readyForCleanReleasePipeline": false,
+  "blockers": [
+    {
+      "name": "dependency-lockfile",
+      "detail": "package-lock.json missing; generate and commit it before release"
+    }
+  ],
+  "checks": [
+    {
+      "name": "node-version",
+      "ok": true,
+      "severity": "blocker",
+      "detail": "Node 22.16.0; required >=22"
+    },
+    {
+      "name": "dependency-lockfile",
+      "ok": false,
+      "severity": "blocker",
+      "detail": "package-lock.json missing; generate and commit it before release"
+    },
+    {
+      "name": "file:packages/db/migrations/003_production_readiness.sql",
+      "ok": true,
+      "severity": "blocker",
+      "detail": "packages/db/migrations/003_production_readiness.sql"
+    },
+    {
+      "name": "file:SECURITY.md",
+      "ok": true,
+      "severity": "blocker",
+      "detail": "SECURITY.md"
+    },
+    {
+      "name": "file:docs/operations/RUNBOOK.md",
+      "ok": true,
+      "severity": "blocker",
+      "detail": "docs/operations/RUNBOOK.md"
+    },
+    {
+      "name": "file:docs/funding/REVIEWER_VERIFICATION.md",
+      "ok": true,
+      "severity": "blocker",
+      "detail": "docs/funding/REVIEWER_VERIFICATION.md"
+    },
+    {
+      "name": "file:docs/api/openapi.yaml",
+      "ok": true,
+      "severity": "blocker",
+      "detail": "docs/api/openapi.yaml"
+    },
+    {
+      "name": "pinned-direct-dependencies",
+      "ok": true,
+      "severity": "blocker",
+      "detail": "direct third-party versions are pinned"
+    },
+    {
+      "name": "env-template:DATABASE_URL",
+      "ok": true,
+      "severity": "blocker",
+      "detail": "DATABASE_URL documented"
+    },
+    {
+      "name": "env-template:CKB_NETWORK",
+      "ok": true,
+      "severity": "blocker",
+      "detail": "CKB_NETWORK documented"
+    },
+    {
+      "name": "env-template:CKB_RPC_URL",
+      "ok": true,
+      "severity": "blocker",
+      "detail": "CKB_RPC_URL documented"
+    },
+    {
+      "name": "env-template:CKB_EXPECTED_GENESIS_HASH",
+      "ok": true,
+      "severity": "blocker",
+      "detail": "CKB_EXPECTED_GENESIS_HASH documented"
+    },
+    {
+      "name": "env-template:CELLFLOW_ENCRYPTION_KEY",
+      "ok": true,
+      "severity": "blocker",
+      "detail": "CELLFLOW_ENCRYPTION_KEY documented"
+    },
+    {
+      "name": "env-template:CELLFLOW_BOOTSTRAP_TOKEN",
+      "ok": true,
+      "severity": "blocker",
+      "detail": "CELLFLOW_BOOTSTRAP_TOKEN documented"
+    },
+    {
+      "name": "env-template:CELLFLOW_SETUP_ENABLED",
+      "ok": true,
+      "severity": "blocker",
+      "detail": "CELLFLOW_SETUP_ENABLED documented"
+    },
+    {
+      "name": "env-template:CRON_SECRET",
+      "ok": true,
+      "severity": "blocker",
+      "detail": "CRON_SECRET documented"
+    }
+  ]
+}

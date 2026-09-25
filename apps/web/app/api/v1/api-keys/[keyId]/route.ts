@@ -5,7 +5,7 @@ export const runtime = "nodejs";
 
 export async function DELETE(request: Request, context: { params: Promise<{ keyId: string }> }) {
   try {
-    const project = await projectFromRequest(request);
+    const project = await projectFromRequest(request, "admin");
     const { keyId } = await context.params;
     await service.revokeApiKey(project, keyId);
     return new Response(null, { status: 204 });

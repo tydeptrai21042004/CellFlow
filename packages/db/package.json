@@ -1,12 +1,12 @@
 {
   "name": "@cellflow/db",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@cellflow/core": "0.2.0",
-    "postgres": "^3.4.9"
+    "@cellflow/core": "0.3.0",
+    "postgres": "3.4.9"
   }
 }

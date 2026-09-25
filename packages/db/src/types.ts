@@ -6,6 +6,28 @@ import type {
   WorkflowStatus,
 } from "@cellflow/core";
 
+
+export type ApiKeyScope = "read" | "write" | "admin";
+
+export interface ApiKeyAuthRecord {
+  id: string;
+  projectId: string;
+  scopes: ApiKeyScope[];
+  expiresAt: string | null;
+}
+
+export interface OperationalHealthRecord {
+  dueReconciliations: number;
+  leasedReconciliations: number;
+  staleActiveIntents: number;
+  oldestActiveAgeSeconds: number | null;
+  pendingWebhooks: number;
+  failedWebhooks: number;
+  activeApiKeys: number;
+  expiringApiKeys7d: number;
+  lastEventAt: string | null;
+}
+
 export interface ProjectRecord {
   id: string;
   name: string;

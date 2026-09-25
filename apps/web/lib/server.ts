@@ -1,12 +1,12 @@
 import { authenticateBearer, CellFlowService } from "@cellflow/api";
 import { CellFlowError } from "@cellflow/core";
-import { CellFlowRepository } from "@cellflow/db";
+import { CellFlowRepository, type ApiKeyScope } from "@cellflow/db";
 
 export const repository = new CellFlowRepository();
 export const service = new CellFlowService(repository);
 
-export async function projectFromRequest(request: Request) {
-  return authenticateBearer(request.headers.get("authorization"), repository);
+export async function projectFromRequest(request: Request, requiredScope: ApiKeyScope = "read") {
+  return authenticateBearer(request.headers.get("authorization"), repository, requiredScope);
 }
 
 export async function readJson(request: Request): Promise<unknown> {

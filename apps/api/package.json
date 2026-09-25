@@ -1,15 +1,15 @@
 {
   "name": "@cellflow/api",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@cellflow/core": "0.2.0",
-    "@cellflow/db": "0.2.0",
-    "@cellflow/reconcile": "0.2.0",
-    "@cellflow/webhooks": "0.2.0",
+    "@cellflow/core": "0.3.0",
+    "@cellflow/db": "0.3.0",
+    "@cellflow/reconcile": "0.3.0",
+    "@cellflow/webhooks": "0.3.0",
     "zod": "4.6.5"
   }
 }

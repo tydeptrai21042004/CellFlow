@@ -1,5 +1,6 @@
 export type CellFlowErrorCode =
   | "AUTH_INVALID"
+  | "AUTH_SCOPE_REQUIRED"
   | "API_KEY_NOT_FOUND"
   | "PROJECT_NOT_FOUND"
   | "INTENT_CONFLICT"

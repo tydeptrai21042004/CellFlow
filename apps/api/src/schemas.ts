@@ -39,6 +39,12 @@ export const setupSchema = z.object({
 
 export const webhookSchema = z.object({ url: z.string().url() });
 
-export const apiKeyCreateSchema = z.object({ label: z.string().min(1).max(80).default("rotated") });
+export const apiKeyCreateSchema = z.object({
+  label: z.string().min(1).max(80).default("rotated"),
+  scopes: z.array(z.enum(["read", "write", "admin"])).min(1).max(3).default(["read", "write"]),
+  expiresInDays: z.number().int().min(1).max(365).nullable().default(90),
+});
 
 export const operatorNoteSchema = z.object({ note: z.string().trim().min(1).max(2000) });
+
+export const webhookRetrySchema = z.object({ endpointId: z.string().uuid().optional() });

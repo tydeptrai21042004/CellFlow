@@ -1,82 +1,117 @@
-# Funding and Validation Strategy
+# Funding and validation strategy — V0.3
 
-## Principle
+## Positioning
 
-Funding should follow evidence. Do not lead with a large DAO request based only on architecture.
+CellFlow should be presented as a **CKB-native transaction operations and recovery layer**, not as another wallet, indexer, explorer, or transaction builder. Its strongest fundable claim is narrower: applications can persist transaction intent and identity before broadcast, survive ambiguous/network/serverless failures, independently reconcile chain state, verify expected Cells, and produce audit/reviewer evidence.
 
-## Pre-funding evidence
+Funding should follow independently reproducible evidence. Architecture is useful, but milestones should end in outputs that a reviewer can run, inspect, or measure.
 
-Minimum evidence package:
+## What V0.3 can demonstrate now
 
-- live Vercel deployment;
-- npm-installable CCC client;
-- SkillPass integration;
-- one independent external pilot;
-- failure/recovery test suite;
-- machine-readable evidence export;
-- public documentation;
-- clear non-overlap statement versus CCC, Cellora, Spark Verify, Fiber Test Lab, and Myelin.
+- durable intent + transaction identity before broadcast;
+- explicit ambiguous-submit recovery without automatic duplicate rebroadcast;
+- canonical-chain reconciliation, confirmation depth, and reorg detection;
+- expected created/live Cell verification;
+- independent RPC fallback with cooldown circuit breaking;
+- least-privilege scoped/expiring project API keys;
+- signed webhooks with durable outbox, delivery leases, disable, health counters, and failed-delivery replay;
+- operational health API/dashboard;
+- intent evidence and project-level hashed evidence exports;
+- deterministic offline regression suite.
 
-## Metrics to collect
+These are engineering capabilities. Do not convert them into claims about zero loss, exactly-once blockchain execution, universal compatibility, or audited mainnet safety.
 
-- tracked operations;
-- committed operations;
-- unknown/reconciling operations;
-- recovered operations after RPC errors;
+## Evidence package for a funding reviewer
+
+A strong submission should include all of the following in one public release:
+
+1. **Source + immutable release** — exact Git commit and version tag.
+2. **Reproduction commands** — clean install, migration, tests, typecheck, build.
+3. **Live deployment** — `/api/health`, `/api/ready`, dashboard, and documented API.
+4. **Real CKB testnet trace** — intent creation → prepare hash → broadcast/ambiguous case → reconciliation → confirmation → expected-Cell assertion.
+5. **Injected failure trace** — kill/restart serverless execution or fail the primary RPC and show recovery through durable state/fallback.
+6. **Machine-readable evidence** — per-intent evidence JSON plus `/api/v1/project-evidence` snapshot and hashes.
+7. **Independent pilot** — one application not maintained by the CellFlow author.
+8. **Operational window** — at least several weeks of real metrics rather than a one-off demo.
+9. **Security posture** — threat model, secret-rotation procedure, dependency lock, vulnerability scan, and external review when funding size justifies it.
+
+See `docs/funding/REVIEWER_VERIFICATION.md` for the verification path.
+
+## Suggested milestone structure
+
+### Milestone 1 — reproducible production candidate
+
+Deliverables:
+
+- committed `package-lock.json` and green clean-install CI;
+- staging deployment with production setup locked;
+- pinned CKB network/genesis configuration and two independent RPC providers;
+- all migrations, backup/restore exercise, 65+ deterministic tests, full typecheck/build;
+- public threat model and runbook.
+
+**Reviewer proof:** CI run, `/api/ready`, release tag, recovery test artifacts.
+
+### Milestone 2 — real CKB recovery evidence
+
+Deliverables:
+
+- testnet transaction lifecycle through CCC integration;
+- primary-RPC outage/failover exercise;
+- ambiguous broadcast exercise;
+- expected live-Cell assertion and confirmation-depth evidence;
+- webhook delivery/retry evidence.
+
+**Reviewer proof:** transaction hashes, CellFlow evidence exports, timestamped test script/output.
+
+### Milestone 3 — independent adoption
+
+Deliverables:
+
+- one external CKB application integrates the REST/CCC boundary;
+- 30-day anonymized operational metrics;
+- documented integration friction and resulting API changes;
+- compatibility/versioning policy.
+
+**Reviewer proof:** external repository or maintainer confirmation plus metrics snapshot.
+
+### Milestone 4 — security and ecosystem readiness
+
+Deliverables:
+
+- external security review and remediation;
+- dependency/SBOM and release-signing workflow;
+- disaster-recovery exercise;
+- stable API/SDK release and migration policy.
+
+**Reviewer proof:** published report, remediated commit hashes, restore exercise, signed release artifacts.
+
+## Metrics worth collecting
+
+- tracked operations and confirmed operations;
+- `SUBMISSION_UNKNOWN` events and percentage recovered by reconciliation;
 - duplicate intent attempts safely collapsed;
-- rejected/conflicted executions;
-- median and p95 submit-to-commit observation time;
-- number of integrated applications;
-- webhook delivery success/retry counts;
-- operator/manual intervention count.
+- reorg/conflict/rejection counts;
+- due and stale reconciliation backlog;
+- primary-RPC failures and fallback activations;
+- median/p95 submit-to-commit observation time;
+- webhook delivered/retried/failed counts and success rate;
+- manual intervention count;
+- active independent integrations;
+- API key rotation/expiry compliance.
 
-## Spark-sized proposal
+## Scope discipline
 
-Keep the first funded milestone narrow:
-
-- reusable core;
-- Vercel reference service;
-- CCC SDK;
-- SkillPass pilot;
-- failure evidence;
-- documentation.
-
-Do not bundle RGB++, Fiber, mobile, analytics, billing, or advanced Cell assertions.
-
-## DAO follow-on
-
-A later DAO proposal is justified only after external adoption. Possible expansion:
-
-- expected Cell assertions;
-- multiple RPC providers/failover;
-- richer conflict diagnostics;
-- self-hosting profiles;
-- Cellora integration;
-- dependency-chain visualization;
-- more database adapters;
-- stable API/SDK guarantees;
-- security audit.
-
-## Reviewer verification path
-
-Every funding milestone should specify:
-
-1. command to install;
-2. command to run tests;
-3. live URL;
-4. expected output;
-5. machine-readable evidence file;
-6. exact Git commit/release tag;
-7. independent pilot proof.
+A first funding request should remain focused on transaction operations/recovery and validation. Avoid bundling unrelated wallet, Fiber/payment, mobile, billing, analytics, marketplace, or generic smart-contract-platform scope unless a funded milestone has a concrete adopter and verification path for it.
 
 ## Claims to avoid
 
 Do not say:
 
-- "exactly-once blockchain execution";
-- "guaranteed production safety";
-- "works with every CKB app";
-- "replaces CCC/indexers/RPC providers";
-- "production-ready" before external validation.
+- “exactly-once blockchain execution”;
+- “guaranteed transaction success”;
+- “audited” without an actual external audit;
+- “production-ready” solely because deterministic tests pass;
+- “works with every CKB application”;
+- “replaces CCC, an indexer, or RPC infrastructure.”
 
-Use verifiable, bounded claims.
+Prefer bounded claims backed by a command, chain artifact, evidence hash, or operational metric.

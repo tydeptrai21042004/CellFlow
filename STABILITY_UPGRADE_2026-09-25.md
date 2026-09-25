@@ -63,6 +63,6 @@ The source archive was missing `.env.example`, causing two existing repository t
 
 ## Verification
 
-- `npm test`: 54 tests pass.
+- `npm test`: 65 tests pass in the current V0.3 tree (the stability layer described here remains covered).
 - `tsc -p tsconfig.check.json --noEmit --noCheck`: passes, validating syntax/module parsing across the TypeScript tree in the available environment.
 - Full dependency-resolved strict typecheck/build requires installing workspace dependencies first (`npm install`); the supplied environment did not have the project dependency tree preinstalled.

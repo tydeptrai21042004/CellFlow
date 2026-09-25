@@ -4,10 +4,13 @@ import { deriveOverallStatus, type ConfirmationPolicy, type ExecutionSnapshot } 
 import { getSql } from "./client.ts";
 import { snapshotFromExecution } from "./types.ts";
 import type {
+  ApiKeyAuthRecord,
+  ApiKeyScope,
   EvidenceExportRecord,
   ExecutionRecord,
   IntentAggregate,
   IntentRecord,
+  OperationalHealthRecord,
   ProjectRecord,
   StateEventRecord,
   WebhookDeliveryRecord,
@@ -186,8 +189,8 @@ export class CellFlowRepository {
         returning *
       `;
       await tx`
-        insert into api_keys (id, project_id, key_prefix, key_hash)
-        values (${input.apiKeyId}, ${projectId}, ${input.apiKeyPrefix}, ${input.apiKeyHash})
+        insert into api_keys (id, project_id, key_prefix, key_hash, scopes)
+        values (${input.apiKeyId}, ${projectId}, ${input.apiKeyPrefix}, ${input.apiKeyHash}, ${["read", "write", "admin"]})
       `;
       const row = projectRows[0];
       if (!row) throw new Error("Failed to create project");
@@ -195,35 +198,55 @@ export class CellFlowRepository {
     });
   }
 
-  async findProjectByApiKeyHash(hash: string): Promise<ProjectRecord | null> {
+  async findAuthByApiKeyHash(hash: string): Promise<{ project: ProjectRecord; key: ApiKeyAuthRecord } | null> {
     const rows = await this.sql`
-      select p.* from projects p
+      select p.*, k.id as auth_key_id, k.scopes as auth_scopes, k.expires_at as auth_expires_at
+      from projects p
       join api_keys k on k.project_id = p.id
-      where k.key_hash = ${hash} and k.revoked_at is null
+      where k.key_hash = ${hash}
+        and k.revoked_at is null
+        and (k.expires_at is null or k.expires_at > now())
       limit 1
     `;
     const row = rows[0];
     if (!row) return null;
     void this.sql`update api_keys set last_used_at = now() where key_hash = ${hash}`;
-    return mapProject(row);
+    return {
+      project: mapProject(row),
+      key: {
+        id: String(row.auth_key_id),
+        projectId: String(row.id),
+        scopes: (row.auth_scopes ?? ["read", "write", "admin"]) as ApiKeyScope[],
+        expiresAt: row.auth_expires_at ? iso(row.auth_expires_at as Date | string) : null,
+      },
+    };
   }
 
-  async createApiKey(input: { projectId: string; id: string; prefix: string; hash: string; label: string }): Promise<void> {
+  async findProjectByApiKeyHash(hash: string): Promise<ProjectRecord | null> {
+    return (await this.findAuthByApiKeyHash(hash))?.project ?? null;
+  }
+
+  async createApiKey(input: {
+    projectId: string; id: string; prefix: string; hash: string; label: string;
+    scopes: ApiKeyScope[]; expiresAt?: Date | null;
+  }): Promise<void> {
     await this.sql`
-      insert into api_keys (id, project_id, key_prefix, key_hash, label)
-      values (${input.id}, ${input.projectId}, ${input.prefix}, ${input.hash}, ${input.label})
+      insert into api_keys (id, project_id, key_prefix, key_hash, label, scopes, expires_at)
+      values (${input.id}, ${input.projectId}, ${input.prefix}, ${input.hash}, ${input.label}, ${input.scopes}, ${input.expiresAt ?? null})
     `;
   }
 
   async listApiKeys(projectId: string): Promise<Array<{
-    id: string; prefix: string; label: string; revokedAt: string | null; lastUsedAt: string | null; createdAt: string;
+    id: string; prefix: string; label: string; scopes: ApiKeyScope[]; expiresAt: string | null; revokedAt: string | null; lastUsedAt: string | null; createdAt: string;
   }>> {
     const rows = await this.sql`
-      select id, key_prefix, label, revoked_at, last_used_at, created_at
+      select id, key_prefix, label, scopes, expires_at, revoked_at, last_used_at, created_at
       from api_keys where project_id = ${projectId} order by created_at asc
     `;
     return rows.map((row) => ({
       id: String(row.id), prefix: String(row.key_prefix), label: String(row.label),
+      scopes: (row.scopes ?? ["read", "write", "admin"]) as ApiKeyScope[],
+      expiresAt: row.expires_at ? iso(row.expires_at as Date | string) : null,
       revokedAt: row.revoked_at ? iso(row.revoked_at as Date | string) : null,
       lastUsedAt: row.last_used_at ? iso(row.last_used_at as Date | string) : null,
       createdAt: iso(row.created_at as Date | string),
@@ -232,11 +255,22 @@ export class CellFlowRepository {
 
   async revokeApiKey(projectId: string, keyId: string): Promise<"REVOKED" | "NOT_FOUND" | "LAST_ACTIVE"> {
     return this.sql.begin(async (tx) => {
-      const rows = await tx`select id, revoked_at from api_keys where project_id = ${projectId} and id = ${keyId} for update`;
+      const rows = await tx`
+        select id, revoked_at, expires_at
+        from api_keys where project_id = ${projectId} and id = ${keyId} for update
+      `;
       if (!rows[0]) return "NOT_FOUND" as const;
       if (rows[0].revoked_at) return "REVOKED" as const;
-      const active = await tx`select count(*)::int as count from api_keys where project_id = ${projectId} and revoked_at is null`;
-      if (Number(active[0]?.count ?? 0) <= 1) return "LAST_ACTIVE" as const;
+      const targetExpired = rows[0].expires_at && new Date(rows[0].expires_at as Date | string).getTime() <= Date.now();
+      if (!targetExpired) {
+        const active = await tx`
+          select count(*)::int as count from api_keys
+          where project_id = ${projectId}
+            and revoked_at is null
+            and (expires_at is null or expires_at > now())
+        `;
+        if (Number(active[0]?.count ?? 0) <= 1) return "LAST_ACTIVE" as const;
+      }
       await tx`update api_keys set revoked_at = now() where project_id = ${projectId} and id = ${keyId}`;
       return "REVOKED" as const;
     });
@@ -374,6 +408,42 @@ export class CellFlowRepository {
       confirmed,
       attention: Number(row.attention ?? 0),
       active: Math.max(0, total - confirmed - terminalFailure),
+    };
+  }
+
+  async getOperationalHealth(projectId: string, staleMinutes = 10): Promise<OperationalHealthRecord> {
+    const stale = Math.min(Math.max(staleMinutes, 1), 1440);
+    const rows = await this.sql`
+      select
+        (select count(*)::int from executions where project_id = ${projectId} and next_reconcile_at <= now()) as due_reconciliations,
+        (select count(*)::int from executions where project_id = ${projectId} and reconcile_lease_until > now()) as leased_reconciliations,
+        (select count(*)::int from executions
+          where project_id = ${projectId}
+            and workflow_status not in ('CONFIRMED','CONFLICTED','EXPIRED')
+            and chain_status <> 'REJECTED'
+            and tx_hash is not null
+            and (last_observed_at is null or last_observed_at < now() - (${stale} * interval '1 minute'))) as stale_active_intents,
+        (select extract(epoch from (now() - min(created_at)))::bigint from executions
+          where project_id = ${projectId}
+            and workflow_status not in ('CONFIRMED','CONFLICTED','EXPIRED')
+            and chain_status <> 'REJECTED') as oldest_active_age_seconds,
+        (select count(*)::int from webhook_deliveries where project_id = ${projectId} and status in ('PENDING','RETRY','CLAIMED')) as pending_webhooks,
+        (select count(*)::int from webhook_deliveries where project_id = ${projectId} and status = 'FAILED') as failed_webhooks,
+        (select count(*)::int from api_keys where project_id = ${projectId} and revoked_at is null and (expires_at is null or expires_at > now())) as active_api_keys,
+        (select count(*)::int from api_keys where project_id = ${projectId} and revoked_at is null and expires_at > now() and expires_at <= now() + interval '7 days') as expiring_api_keys_7d,
+        (select max(created_at) from state_events where project_id = ${projectId}) as last_event_at
+    `;
+    const row = rows[0] ?? {};
+    return {
+      dueReconciliations: Number(row.due_reconciliations ?? 0),
+      leasedReconciliations: Number(row.leased_reconciliations ?? 0),
+      staleActiveIntents: Number(row.stale_active_intents ?? 0),
+      oldestActiveAgeSeconds: row.oldest_active_age_seconds == null ? null : Number(row.oldest_active_age_seconds),
+      pendingWebhooks: Number(row.pending_webhooks ?? 0),
+      failedWebhooks: Number(row.failed_webhooks ?? 0),
+      activeApiKeys: Number(row.active_api_keys ?? 0),
+      expiringApiKeys7d: Number(row.expiring_api_keys_7d ?? 0),
+      lastEventAt: row.last_event_at ? iso(row.last_event_at as Date | string) : null,
     };
   }
 
@@ -783,6 +853,21 @@ export class CellFlowRepository {
     return rows.length;
   }
 
+  async retryFailedWebhookDeliveries(projectId: string, endpointId?: string): Promise<number> {
+    const rows = endpointId
+      ? await this.sql`
+          update webhook_deliveries set status = 'RETRY', next_attempt_at = now(), lease_owner = null, lease_until = null, updated_at = now()
+          where project_id = ${projectId} and endpoint_id = ${endpointId} and status = 'FAILED'
+          returning id
+        `
+      : await this.sql`
+          update webhook_deliveries set status = 'RETRY', next_attempt_at = now(), lease_owner = null, lease_until = null, updated_at = now()
+          where project_id = ${projectId} and status = 'FAILED'
+          returning id
+        `;
+    return rows.length;
+  }
+
   async claimDueWebhookDeliveries(limit: number, leaseOwner: string, leaseSeconds = 60, projectId?: string): Promise<WebhookDeliveryRecord[]> {
     const rows = await this.sql.begin(async (tx) => {
       const candidates = projectId
@@ -887,6 +972,18 @@ export class CellFlowRepository {
       id: String(row.id), evidenceSha256: String(row.evidence_sha256), schemaVersion: String(row.schema_version),
       maxEventSequence: Number(row.max_event_sequence), createdAt: iso(row.created_at as Date | string),
     };
+  }
+
+  async recordProjectEvidenceExport(input: { projectId: string; sha256: string; document: unknown }): Promise<{ id: string; createdAt: string }> {
+    const id = randomUUID();
+    const rows = await this.sql`
+      insert into project_evidence_exports (id, project_id, evidence_sha256, document)
+      values (${id}, ${input.projectId}, ${input.sha256}, ${this.sql.json(toJsonValue(input.document))})
+      returning id, created_at
+    `;
+    const row = rows[0];
+    if (!row) throw new Error("Project evidence export insert failed");
+    return { id: String(row.id), createdAt: iso(row.created_at as Date | string) };
   }
 
   async executionPublicView(aggregate: IntentAggregate): Promise<Record<string, unknown>> {
