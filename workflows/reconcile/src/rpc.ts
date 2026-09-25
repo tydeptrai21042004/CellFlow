@@ -39,6 +39,29 @@ interface JsonRpcEnvelope<T> {
   error?: { code: number; message: string; data?: unknown };
 }
 
+export function parseRpcUrls(...sources: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const urls: string[] = [];
+  for (const source of sources) {
+    if (!source) continue;
+    for (const part of source.split(/[\s,]+/)) {
+      const value = part.trim();
+      if (!value || seen.has(value)) continue;
+      let parsed: URL;
+      try { parsed = new URL(value); } catch { continue; }
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") continue;
+      seen.add(parsed.toString());
+      urls.push(parsed.toString());
+    }
+  }
+  return urls;
+}
+
+function rpcTimeoutMs(): number {
+  const configured = Number(process.env.CKB_RPC_TIMEOUT_MS ?? "10000");
+  return Number.isFinite(configured) ? Math.min(Math.max(configured, 1000), 30000) : 10000;
+}
+
 class RpcEndpointSession {
   private requestId = 1;
   constructor(readonly url: string) {}
@@ -48,7 +71,7 @@ class RpcEndpointSession {
       method: "POST",
       headers: { "content-type": "application/json", "user-agent": "CellFlow/0.2" },
       body: JSON.stringify({ jsonrpc: "2.0", id: this.requestId++, method, params }),
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(rpcTimeoutMs()),
     });
     if (!response.ok) throw new Error(`RPC HTTP ${response.status}`);
     const text = await response.text();
@@ -61,8 +84,15 @@ class RpcEndpointSession {
 }
 
 export class CkbRpcClient {
-  constructor(private readonly urls: string[]) {
-    if (urls.length === 0) throw new Error("At least one CKB RPC URL is required");
+  private readonly urls: string[];
+
+  constructor(urls: string[]) {
+    this.urls = parseRpcUrls(...urls);
+    if (this.urls.length === 0) throw new Error("At least one valid CKB RPC URL is required");
+  }
+
+  endpoints(): string[] {
+    return [...this.urls];
   }
 
   private async withSession<T>(operation: (session: RpcEndpointSession) => Promise<T>): Promise<T> {

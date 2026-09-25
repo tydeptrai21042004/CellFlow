@@ -12,6 +12,9 @@ export type CellFlowErrorCode =
   | "WEBHOOK_URL_INVALID"
   | "RATE_LIMITED"
   | "ASSERTION_FAILED"
+  | "INVALID_JSON"
+  | "REQUEST_TOO_LARGE"
+  | "WEBHOOK_NOT_FOUND"
   | "INTERNAL_ERROR";
 
 export class CellFlowError extends Error {

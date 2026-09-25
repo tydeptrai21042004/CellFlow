@@ -17,7 +17,7 @@ import {
   snapshotFromExecution,
   type IntentAggregate,
 } from "@cellflow/db";
-import { CkbRpcClient, observeTransaction } from "./rpc.ts";
+import { CkbRpcClient, observeTransaction, parseRpcUrls } from "./rpc.ts";
 
 export function nextReconcileDelayMs(attempt: number, chainStatus: string): number {
   if (["PENDING", "PROPOSED", "COMMITTED"].includes(chainStatus)) return 12_000;
@@ -28,9 +28,12 @@ export function nextReconcileDelayMs(attempt: number, chainStatus: string): numb
 }
 
 function endpointsFor(projectRpcUrl: string | null): string[] {
-  const urls = [projectRpcUrl, process.env.CKB_RPC_URL, process.env.CKB_RPC_FALLBACK_URL]
-    .filter((value): value is string => Boolean(value));
-  return [...new Set(urls)];
+  return parseRpcUrls(
+    projectRpcUrl,
+    process.env.CKB_RPC_URL,
+    process.env.CKB_RPC_FALLBACK_URL,
+    process.env.CKB_RPC_FALLBACK_URLS,
+  );
 }
 
 export interface ReconcileResult {

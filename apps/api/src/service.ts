@@ -100,6 +100,10 @@ export class CellFlowService {
     return aggregate;
   }
 
+  async projectMetrics(project: ProjectRecord): Promise<{ total: number; active: number; confirmed: number; attention: number }> {
+    return this.repository.getProjectMetrics(project.id);
+  }
+
   async listIntents(project: ProjectRecord, limit?: number): Promise<Record<string, unknown>[]> {
     const rows = await this.repository.listIntents(project.id, limit ?? 100);
     return Promise.all(rows.map((row) => this.repository.executionPublicView(row)));
@@ -205,6 +209,12 @@ export class CellFlowService {
     return this.repository.executionPublicView(updated);
   }
 
+  async addOperatorNote(project: ProjectRecord, intentId: string, note: string): Promise<Record<string, unknown>> {
+    const aggregate = await this.getIntent(project, intentId);
+    await this.repository.addOperatorNote({ aggregate, note });
+    return this.intentDetail(project, intentId);
+  }
+
   async evidence(project: ProjectRecord, intentId: string): Promise<Record<string, unknown>> {
     const aggregate = await this.getIntent(project, intentId);
     const events = await this.repository.getEvents(project.id, aggregate.intent.id);
@@ -274,8 +284,25 @@ export class CellFlowService {
     return { id: endpoint.id, url: endpoint.url, signingSecret };
   }
 
-  async listWebhooks(project: ProjectRecord): Promise<Array<{ id: string; url: string; secretVersion: number }>> {
+  async listWebhooks(project: ProjectRecord): Promise<Array<{
+    id: string; url: string; secretVersion: number; enabled: boolean;
+    deliveredCount: number; failedCount: number; pendingCount: number; lastDeliveryAt: string | null;
+  }>> {
     const endpoints = await this.repository.listWebhookEndpoints(project.id);
-    return endpoints.map((endpoint) => ({ id: endpoint.id, url: endpoint.url, secretVersion: endpoint.secretVersion }));
+    return endpoints.map((endpoint) => ({
+      id: endpoint.id,
+      url: endpoint.url,
+      secretVersion: endpoint.secretVersion,
+      enabled: endpoint.enabled,
+      deliveredCount: endpoint.deliveredCount,
+      failedCount: endpoint.failedCount,
+      pendingCount: endpoint.pendingCount,
+      lastDeliveryAt: endpoint.lastDeliveryAt,
+    }));
+  }
+
+  async disableWebhook(project: ProjectRecord, endpointId: string): Promise<void> {
+    const disabled = await this.repository.disableWebhookEndpoint(project.id, endpointId);
+    if (!disabled) throw new CellFlowError("WEBHOOK_NOT_FOUND", "Active webhook endpoint not found", 404);
   }
 }

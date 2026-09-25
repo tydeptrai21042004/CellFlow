@@ -22,7 +22,7 @@ type Intent = {
   createdAt: string;
 };
 
-type Health = { database: "checking" | "healthy" | "down"; rpc: "checking" | "healthy" | "down"; tip?: string; };
+type Health = { database: "checking" | "healthy" | "down"; rpc: "checking" | "healthy" | "down"; readiness: "checking" | "healthy" | "down"; tip?: string; latencyMs?: number; };
 
 const txHashPattern = /^0x[0-9a-fA-F]{64}$/;
 
@@ -32,6 +32,7 @@ export default function Dashboard() {
   const [projectName, setProjectName] = useState("CellFlow Demo");
   const [createdKey, setCreatedKey] = useState("");
   const [intents, setIntents] = useState<Intent[]>([]);
+  const [serverMetrics, setServerMetrics] = useState<{ total: number; active: number; confirmed: number; attention: number } | null>(null);
   const [intentId, setIntentId] = useState("");
   const [txHash, setTxHash] = useState("");
   const [message, setMessage] = useState("Connect a project API key to load live operational data. Keys remain only in page memory.");
@@ -40,19 +41,22 @@ export default function Dashboard() {
   const [filter, setFilter] = useState("ALL");
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [detail, setDetail] = useState<IntentDetail | null>(null);
-  const [health, setHealth] = useState<Health>({ database: "checking", rpc: "checking" });
+  const [health, setHealth] = useState<Health>({ database: "checking", rpc: "checking", readiness: "checking" });
   const [showSetup, setShowSetup] = useState(false);
   const canLoad = useMemo(() => apiKey.startsWith("cf_live_"), [apiKey]);
 
   const loadHealth = useCallback(async () => {
-    const [database, rpc] = await Promise.allSettled([
+    const [database, rpc, readiness] = await Promise.allSettled([
       jsonRequest<{ ok: boolean; database?: string }>("/api/health"),
-      jsonRequest<{ ok: boolean; tip?: { number?: string } }>("/api/health/rpc"),
+      jsonRequest<{ ok: boolean; tip?: { number?: string }; latencyMs?: number }>("/api/health/rpc"),
+      jsonRequest<{ ok: boolean }>("/api/ready"),
     ]);
     setHealth({
       database: database.status === "fulfilled" && database.value.ok ? "healthy" : "down",
       rpc: rpc.status === "fulfilled" && rpc.value.ok ? "healthy" : "down",
+      readiness: readiness.status === "fulfilled" && readiness.value.ok ? "healthy" : "down",
       ...(rpc.status === "fulfilled" && rpc.value.tip?.number ? { tip: rpc.value.tip.number } : {}),
+      ...(rpc.status === "fulfilled" && typeof rpc.value.latencyMs === "number" ? { latencyMs: rpc.value.latencyMs } : {}),
     });
   }, []);
 
@@ -60,9 +64,13 @@ export default function Dashboard() {
     if (!canLoad) return;
     if (!silent) setBusy(true);
     try {
-      const body = await jsonRequest<{ intents: Intent[] }>("/api/v1/intents?limit=200", apiKey);
+      const [body, metricBody] = await Promise.all([
+        jsonRequest<{ intents: Intent[] }>("/api/v1/intents?limit=200", apiKey),
+        jsonRequest<{ metrics: { total: number; active: number; confirmed: number; attention: number } }>("/api/v1/metrics", apiKey),
+      ]);
       setIntents(body.intents ?? []);
-      if (!silent) setMessage(`${body.intents?.length ?? 0} intent(s) loaded.`);
+      setServerMetrics(metricBody.metrics);
+      if (!silent) setMessage(`${body.intents?.length ?? 0} recent intent(s) loaded${metricBody.metrics.total > (body.intents?.length ?? 0) ? ` of ${metricBody.metrics.total} total` : ""}.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Failed to load intents");
     } finally { if (!silent) setBusy(false); }
@@ -75,12 +83,13 @@ export default function Dashboard() {
     return () => window.clearInterval(timer);
   }, [autoRefresh, canLoad, load, loadHealth]);
 
-  const metrics = useMemo(() => ({
+  const localMetrics = useMemo(() => ({
     total: intents.length,
     active: intents.filter((item) => !["CONFIRMED", "REJECTED", "CONFLICTED", "EXPIRED"].includes(item.status)).length,
     confirmed: intents.filter((item) => item.status === "CONFIRMED").length,
     attention: intents.filter((item) => statusTone(item.status) === "danger" || item.status === "UNKNOWN").length,
   }), [intents]);
+  const metrics = serverMetrics ?? localMetrics;
 
   const filtered = useMemo(() => intents.filter((item) => {
     const query = search.trim().toLowerCase();
@@ -133,6 +142,19 @@ export default function Dashboard() {
     } catch (error) { setMessage(error instanceof Error ? error.message : "Intent detail failed"); }
   }
 
+  async function addNote(id: string, note: string) {
+    setBusy(true);
+    try {
+      const body = await jsonRequest<{ intent: IntentDetail }>(`/api/v1/intents/${encodeURIComponent(id)}/notes`, apiKey, { method: "POST", body: JSON.stringify({ note }) });
+      setDetail(body.intent);
+      await load(true);
+      setMessage(`Operator note added to ${id}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to add operator note");
+      throw error;
+    } finally { setBusy(false); }
+  }
+
   return (
     <section className="shell workspace">
       <div className="control-strip panel">
@@ -140,7 +162,8 @@ export default function Dashboard() {
         <div className="api-key-row"><label className="sr-only" htmlFor="project-api-key">Project API key</label><input id="project-api-key" type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="cf_live_…" /><button className="secondary" disabled={busy || !canLoad} onClick={() => load(false)}>Load project</button></div>
         <div className="health-cluster" aria-label="Service health">
           <span className={`health-pill health-${health.database}`}>DB <b>{health.database}</b></span>
-          <span className={`health-pill health-${health.rpc}`}>CKB RPC <b>{health.rpc}</b>{health.tip ? ` · ${health.tip}` : ""}</span>
+          <span className={`health-pill health-${health.rpc}`}>CKB RPC <b>{health.rpc}</b>{health.tip ? ` · ${health.tip}` : ""}{typeof health.latencyMs === "number" ? ` · ${health.latencyMs}ms` : ""}</span>
+          <span className={`health-pill health-${health.readiness}`}>Ready <b>{health.readiness}</b></span>
         </div>
       </div>
 
@@ -203,7 +226,7 @@ export default function Dashboard() {
         {showSetup && <div className="setup-body"><div className="setup-form"><label><span>Project name</span><input value={projectName} onChange={(event) => setProjectName(event.target.value)} /></label><label><span>Bootstrap token</span><input type="password" autoComplete="off" value={bootstrapToken} onChange={(event) => setBootstrapToken(event.target.value)} placeholder="CELLFLOW_BOOTSTRAP_TOKEN" /></label><button disabled={busy || bootstrapToken.length < 24} onClick={setup}>Create project</button></div>{createdKey && <div className="one-time-secret"><span>Project API key · copy once</span><code>{createdKey}</code><button className="link-button" onClick={() => navigator.clipboard?.writeText(createdKey)}>Copy</button></div>}</div>}
       </section>
 
-      <IntentDrawer detail={detail} busy={busy} onClose={() => setDetail(null)} onReconcile={reconcile} onEvidence={evidence} />
+      <IntentDrawer detail={detail} busy={busy} onClose={() => setDetail(null)} onReconcile={reconcile} onEvidence={evidence} onAddNote={addNote} />
     </section>
   );
 }

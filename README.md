@@ -16,19 +16,35 @@ This repository now contains a runnable implementation rather than only the orig
 - configurable confirmation policy (`committed` or `depth:N`);
 - explicit reorg state rather than treating `COMMITTED` as permanently terminal;
 - Vercel Workflow SDK durable reconciliation loop;
-- Vercel Cron repair sweep as a secondary safety mechanism;
+- Vercel Cron repair sweep as a secondary safety mechanism, with failure-isolated reconcile/webhook/cleanup tasks;
 - CCC integration that calculates `tx.hash()` and persists it **before broadcast**;
 - ambiguous-submit handling without automatic duplicate rebroadcast;
 - expected-Cell assertions for output index/capacity/lock/type/data with `created` and current `live` modes;
 - atomic state/event/webhook outbox writes, leased webhook retries, encrypted per-endpoint secrets and DNS-pinned SSRF protection;
 - project/API-key bootstrap flow with separate bootstrap and encryption secrets plus DB-backed rate limiting;
-- production-style operations dashboard with service health, KPIs, search/filtering, intent audit drawer and optional auto-refresh;
+- production-style operations dashboard with DB/RPC/readiness health, RPC latency, project-wide KPI aggregates, search/filtering, intent audit drawer and optional auto-refresh;
 - persisted/deduplicated deterministic JSON evidence endpoint;
 - optimistic concurrency retry, reconciliation leases and deduplicated durable Workflow starts;
 - zero-dependency `cellflow` operator CLI;
 - interactive local-only SkillPass lifecycle example with REST/CCC integration snippets;
-- API-key and signed-webhook management UI;
-- 47 deterministic lifecycle, reorg, assertion, hardening, UI-safety and deployment-contract tests.
+- API-key and signed-webhook management UI, including webhook delivery counters and non-destructive endpoint disable;
+- durable operator notes recorded in the intent audit timeline and signed webhook outbox;
+- bounded JSON request bodies with deterministic malformed/oversized request errors;
+- multi-endpoint CKB RPC failover via primary, single fallback, or comma-separated fallback lists;
+- 54 deterministic lifecycle, reorg, assertion, hardening, stability, UI-safety and deployment-contract tests.
+
+## Stability hardening added September 25, 2026
+
+The current tree adds operational safeguards on top of V0.2 without changing the core transaction model:
+
+- `/api/ready` checks database access, CKB RPC reachability, and critical runtime-secret presence for deployment readiness;
+- RPC configuration can fail over across `CKB_RPC_URL`, `CKB_RPC_FALLBACK_URL`, and comma-separated `CKB_RPC_FALLBACK_URLS`;
+- maintenance uses isolated task settlement so webhook delivery failure does not suppress reconciliation or cleanup;
+- JSON request parsing enforces a configurable body ceiling and returns stable API errors for malformed/oversized input;
+- intent drawers can append durable operator notes to the audit timeline;
+- webhook management exposes delivery health and supports disabling an endpoint while retaining delivery history.
+
+See `STABILITY_UPGRADE_2026-09-25.md` for the implementation notes.
 
 ## Architecture
 
@@ -124,10 +140,13 @@ Required values:
 DATABASE_URL=postgresql://...
 CKB_NETWORK=testnet
 CKB_RPC_URL=https://testnet.ckbapp.dev/rpc
+CKB_RPC_FALLBACK_URLS=https://rpc-backup-1.example/rpc,https://rpc-backup-2.example/rpc
+CKB_RPC_TIMEOUT_MS=10000
 CELLFLOW_ENCRYPTION_KEY=<at-least-32-random-characters>
 CELLFLOW_BOOTSTRAP_TOKEN=<different-bootstrap-token>
 CELLFLOW_SETUP_ENABLED=true
 CELLFLOW_RATE_LIMIT_PER_MINUTE=240
+CELLFLOW_MAX_JSON_BODY_BYTES=262144
 CRON_SECRET=<different-random-secret>
 NEXT_PUBLIC_APP_URL=http://localhost:3000
 DEFAULT_CONFIRMATION_POLICY=depth:4

@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { explorerTxUrl, formatRelativeTime, shortHash } from "../lib/browser-api.ts";
 import StatusBadge from "./StatusBadge.tsx";
 
@@ -40,6 +41,7 @@ interface Props {
   onClose: () => void;
   onReconcile: (intentId: string) => void;
   onEvidence: (intentId: string) => void;
+  onAddNote: (intentId: string, note: string) => Promise<void>;
 }
 
 function jsonPreview(value: unknown): string {
@@ -47,7 +49,9 @@ function jsonPreview(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
-export default function IntentDrawer({ detail, busy, onClose, onReconcile, onEvidence }: Props) {
+export default function IntentDrawer({ detail, busy, onClose, onReconcile, onEvidence, onAddNote }: Props) {
+  const [note, setNote] = useState("");
+  useEffect(() => { setNote(""); }, [detail?.intentId]);
   if (!detail) return null;
   const required = detail.confirmationPolicy?.mode === "depth" ? detail.confirmationPolicy.blocks ?? 0 : 1;
   const percent = required > 0 ? Math.min(100, Math.round((detail.confirmationCount / required) * 100)) : 0;
@@ -98,6 +102,15 @@ export default function IntentDrawer({ detail, busy, onClose, onReconcile, onEvi
           <div className="data-columns">
             <div><span className="micro-label">Metadata</span><pre className="json-box">{jsonPreview(detail.metadata ?? {})}</pre></div>
             <div><span className="micro-label">Expected Cells</span><pre className="json-box">{jsonPreview(detail.expectedCells ?? [])}</pre></div>
+          </div>
+        </section>
+
+
+        <section className="drawer-section">
+          <div className="section-row"><h3>Operator note</h3><span>Durable audit annotation</span></div>
+          <div className="note-form">
+            <textarea value={note} onChange={(event) => setNote(event.target.value)} maxLength={2000} placeholder="Record a deployment incident, manual verification, customer reference, or recovery decision…" />
+            <div className="section-row"><small>{note.length}/2000</small><button type="button" disabled={busy || note.trim().length === 0} onClick={async () => { await onAddNote(detail.intentId, note.trim()); setNote(""); }}>Add note</button></div>
           </div>
         </section>
 

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Sql, TransactionSql } from "postgres";
 import { deriveOverallStatus, type ConfirmationPolicy, type ExecutionSnapshot } from "@cellflow/core";
 import { getSql } from "./client.ts";
+import { snapshotFromExecution } from "./types.ts";
 import type {
   EvidenceExportRecord,
   ExecutionRecord,
@@ -93,6 +94,7 @@ function webhookEventType(kind: string, status: string): string {
   if (kind === "ASSERTION_FAILED") return "intent.assertion_failed";
   if (kind === "REORG_DETECTED") return "intent.reorged";
   if (kind === "CONFIRMED") return "intent.confirmed";
+  if (kind === "OPERATOR_NOTE") return "intent.operator_note";
   return `intent.${status.toLowerCase()}`;
 }
 
@@ -344,6 +346,37 @@ export class CellFlowRepository {
     };
   }
 
+  async getProjectMetrics(projectId: string): Promise<{ total: number; active: number; confirmed: number; attention: number }> {
+    const rows = await this.sql`
+      select
+        count(*)::int as total,
+        (count(*) filter (
+          where e.workflow_status = 'CONFIRMED'
+            and (jsonb_array_length(i.expected_cells) = 0 or e.assertion_status = 'VERIFIED')
+        ))::int as confirmed,
+        (count(*) filter (
+          where e.workflow_status in ('CONFLICTED','EXPIRED') or e.chain_status = 'REJECTED'
+        ))::int as terminal_failure,
+        (count(*) filter (
+          where e.chain_status in ('UNKNOWN','REJECTED')
+             or e.workflow_status in ('REORGED','CONFLICTED','EXPIRED')
+             or e.submission_status = 'SUBMISSION_UNKNOWN'
+        ))::int as attention
+      from intents i join executions e on e.intent_row_id = i.id
+      where i.project_id = ${projectId}
+    `;
+    const row = rows[0] ?? {};
+    const total = Number(row.total ?? 0);
+    const confirmed = Number(row.confirmed ?? 0);
+    const terminalFailure = Number(row.terminal_failure ?? 0);
+    return {
+      total,
+      confirmed,
+      attention: Number(row.attention ?? 0),
+      active: Math.max(0, total - confirmed - terminalFailure),
+    };
+  }
+
   async listIntents(projectId: string, limit = 100): Promise<IntentAggregate[]> {
     const rows = await this.sql`
       select
@@ -572,6 +605,28 @@ export class CellFlowRepository {
     }));
   }
 
+  async addOperatorNote(input: { aggregate: IntentAggregate; note: string }): Promise<void> {
+    const snapshot = snapshotFromExecution(input.aggregate.execution);
+    await this.sql.begin(async (tx) => {
+      await this.insertEventAndOutbox(tx, {
+        projectId: input.aggregate.intent.projectId,
+        intentRowId: input.aggregate.intent.id,
+        executionId: input.aggregate.execution.id,
+        intentId: input.aggregate.intent.intentId,
+        txHash: input.aggregate.execution.txHash,
+        kind: "OPERATOR_NOTE",
+        fromStatus: deriveOverallStatus(snapshot),
+        toStatus: deriveOverallStatus(snapshot),
+        reason: input.note,
+        occurredAt: new Date(),
+        snapshot,
+        assertionStatus: input.aggregate.execution.assertionStatus,
+      });
+      await tx`update intents set updated_at = now() where id = ${input.aggregate.intent.id}`;
+      await tx`update executions set updated_at = now() where id = ${input.aggregate.execution.id}`;
+    });
+  }
+
   async getEvents(projectId: string, intentRowId: string): Promise<StateEventRecord[]> {
     const rows = await this.sql`
       select sequence, id, kind, from_status, to_status, reason, raw_observation, occurred_at
@@ -686,12 +741,36 @@ export class CellFlowRepository {
     };
   }
 
-  async listWebhookEndpoints(projectId: string): Promise<WebhookEndpointRecord[]> {
-    const rows = await this.sql`select * from webhook_endpoints where project_id = ${projectId} and enabled = true order by created_at asc`;
+  async listWebhookEndpoints(projectId: string): Promise<Array<WebhookEndpointRecord & {
+    deliveredCount: number; failedCount: number; pendingCount: number; lastDeliveryAt: string | null;
+  }>> {
+    const rows = await this.sql`
+      select w.*,
+        (count(d.id) filter (where d.status = 'DELIVERED'))::int as delivered_count,
+        (count(d.id) filter (where d.status = 'FAILED'))::int as failed_count,
+        (count(d.id) filter (where d.status in ('PENDING','RETRY','CLAIMED')))::int as pending_count,
+        max(d.updated_at) as last_delivery_at
+      from webhook_endpoints w
+      left join webhook_deliveries d on d.endpoint_id = w.id
+      where w.project_id = ${projectId}
+      group by w.id
+      order by w.created_at asc
+    `;
     return rows.map((row) => ({
       id: String(row.id), projectId: String(row.project_id), url: String(row.url),
       signingSecretEncrypted: String(row.signing_secret_encrypted), secretVersion: Number(row.secret_version), enabled: Boolean(row.enabled),
+      deliveredCount: Number(row.delivered_count ?? 0), failedCount: Number(row.failed_count ?? 0), pendingCount: Number(row.pending_count ?? 0),
+      lastDeliveryAt: row.last_delivery_at ? iso(row.last_delivery_at as Date | string) : null,
     }));
+  }
+
+  async disableWebhookEndpoint(projectId: string, endpointId: string): Promise<boolean> {
+    const rows = await this.sql`
+      update webhook_endpoints set enabled = false, updated_at = now()
+      where project_id = ${projectId} and id = ${endpointId} and enabled = true
+      returning id
+    `;
+    return rows.length === 1;
   }
 
   async enqueueWebhookDeliveries(input: { projectId: string; eventId: string; eventType: string; payload: unknown }): Promise<number> {

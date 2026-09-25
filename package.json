@@ -16,7 +16,7 @@
     "build": "npm run build -w @cellflow/web",
     "start": "npm run start -w @cellflow/web",
     "typecheck": "tsc -p tsconfig.check.json --noEmit",
-    "test": "npm run test:core && npm run test:assertions && node --test tests/runtime/tree.test.mjs tests/runtime/hardening.test.mjs tests/runtime/ui.test.mjs",
+    "test": "npm run test:core && npm run test:assertions && node --test tests/runtime/tree.test.mjs tests/runtime/hardening.test.mjs tests/runtime/ui.test.mjs tests/runtime/stability-upgrade.test.mjs",
     "test:core": "rm -rf .tmp/core && tsc -p packages/core/tsconfig.json && node --test tests/runtime/core.test.mjs",
     "migrate": "node scripts/migrate.mjs",
     "verify": "npm run test && node scripts/verify-tree.mjs",

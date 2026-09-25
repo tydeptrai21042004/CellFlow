@@ -40,3 +40,5 @@ export const setupSchema = z.object({
 export const webhookSchema = z.object({ url: z.string().url() });
 
 export const apiKeyCreateSchema = z.object({ label: z.string().min(1).max(80).default("rotated") });
+
+export const operatorNoteSchema = z.object({ note: z.string().trim().min(1).max(2000) });

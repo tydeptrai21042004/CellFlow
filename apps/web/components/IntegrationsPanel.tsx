@@ -4,7 +4,7 @@ import { useState } from "react";
 import { jsonRequest } from "../lib/browser-api.ts";
 
 interface ApiKeyRecord { id: string; prefix: string; label: string; createdAt?: string; lastUsedAt?: string | null; revokedAt?: string | null; }
-interface WebhookRecord { id: string; url: string; secretVersion: number; }
+interface WebhookRecord { id: string; url: string; secretVersion: number; enabled: boolean; deliveredCount: number; failedCount: number; pendingCount: number; lastDeliveryAt: string | null; }
 
 export default function IntegrationsPanel({ apiKey, onMessage }: { apiKey: string; onMessage: (message: string) => void }) {
   const [keys, setKeys] = useState<ApiKeyRecord[]>([]);
@@ -69,7 +69,18 @@ export default function IntegrationsPanel({ apiKey, onMessage }: { apiKey: strin
     try {
       const body = await jsonRequest<{ queued: number }>("/api/v1/webhooks/test", apiKey, { method: "POST", body: "{}" });
       onMessage(`Webhook test accepted (${body.queued ?? 0} delivery record(s) queued).`);
+      await refresh();
     } catch (error) { onMessage(error instanceof Error ? error.message : "Webhook test failed"); }
+    finally { setBusy(false); }
+  }
+
+  async function disableWebhook(endpointId: string) {
+    setBusy(true);
+    try {
+      await jsonRequest(`/api/v1/webhooks/${encodeURIComponent(endpointId)}`, apiKey, { method: "DELETE" });
+      await refresh();
+      onMessage("Webhook endpoint disabled. Re-adding the same URL rotates its signing secret and enables it again.");
+    } catch (error) { onMessage(error instanceof Error ? error.message : "Webhook disable failed"); }
     finally { setBusy(false); }
   }
 
@@ -98,7 +109,7 @@ export default function IntegrationsPanel({ apiKey, onMessage }: { apiKey: strin
           <div className="stacked-form"><label><span>HTTPS endpoint</span><input value={webhookUrl} onChange={(event) => setWebhookUrl(event.target.value)} placeholder="https://api.example.com/cellflow" /></label><div className="action-cluster"><button type="button" disabled={busy || !apiKey || !webhookUrl.startsWith("https://")} onClick={createWebhook}>Add endpoint</button><button className="secondary" type="button" disabled={busy || !apiKey || webhooks.length === 0} onClick={testWebhook}>Send test</button></div></div>
           {newWebhookSecret && <div className="one-time-secret"><span>Signing secret</span><code>{newWebhookSecret}</code><button className="link-button" type="button" onClick={() => navigator.clipboard?.writeText(newWebhookSecret)}>Copy</button></div>}
           <div className="compact-list">
-            {webhooks.map((webhook) => <div key={webhook.id}><div><strong>{webhook.url}</strong><small>Secret version {webhook.secretVersion}</small></div><span className="endpoint-state">Active</span></div>)}
+            {webhooks.map((webhook) => <div key={webhook.id}><div><strong>{webhook.url}</strong><small>Secret v{webhook.secretVersion} · {webhook.deliveredCount} delivered · {webhook.pendingCount} pending · {webhook.failedCount} failed</small></div><div className="endpoint-actions"><span className={`endpoint-state ${webhook.enabled ? "" : "endpoint-disabled"}`}>{webhook.enabled ? "Active" : "Disabled"}</span>{webhook.enabled && <button className="danger-link" type="button" disabled={busy} onClick={() => disableWebhook(webhook.id)}>Disable</button>}</div></div>)}
             {webhooks.length === 0 && <p className="muted-empty">No webhook endpoints loaded.</p>}
           </div>
         </div>
