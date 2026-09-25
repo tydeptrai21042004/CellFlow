@@ -10,5 +10,5 @@
       "schedule": "0 0 * * *"
     }
   ],
-  "outputDirectory": "apps/web/.next"
+  "outputDirectory": ".next"
 }
