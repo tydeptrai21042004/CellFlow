@@ -1,6 +1,7 @@
 import { errorResponse } from "@cellflow/api";
 import { reconcileDue } from "@cellflow/reconcile";
 import { deliverDueWebhooks } from "@cellflow/webhook-delivery";
+import { CellFlowRepository } from "@cellflow/db";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -15,11 +16,13 @@ export async function GET(request: Request) {
     if (!authorize(request)) {
       return Response.json({ error: { code: "AUTH_INVALID", message: "Invalid cron authorization" } }, { status: 401 });
     }
-    const [reconciled, webhooks] = await Promise.all([
+    const repository = new CellFlowRepository();
+    const [reconciled, webhooks, prunedRateLimits] = await Promise.all([
       reconcileDue(25),
       deliverDueWebhooks(25),
+      repository.pruneRateLimits(24),
     ]);
-    return Response.json({ ok: true, reconciled, webhooks });
+    return Response.json({ ok: true, reconciled, webhooks, prunedRateLimits });
   } catch (error) {
     return errorResponse(error);
   }

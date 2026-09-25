@@ -1,7 +1,11 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "strict": true,
@@ -12,6 +16,33 @@
     "resolveJsonModule": true,
     "esModuleInterop": true,
     "isolatedModules": true,
-    "verbatimModuleSyntax": true
+    "verbatimModuleSyntax": true,
+    "baseUrl": ".",
+    "paths": {
+      "@cellflow/core": [
+        "packages/core/src/index.ts"
+      ],
+      "@cellflow/assertions": [
+        "packages/assertions/src/index.ts"
+      ],
+      "@cellflow/db": [
+        "packages/db/src/index.ts"
+      ],
+      "@cellflow/webhooks": [
+        "packages/webhooks/src/index.ts"
+      ],
+      "@cellflow/reconcile": [
+        "workflows/reconcile/src/index.ts"
+      ],
+      "@cellflow/webhook-delivery": [
+        "workflows/webhook-delivery/src/index.ts"
+      ],
+      "@cellflow/api": [
+        "apps/api/src/index.ts"
+      ],
+      "@cellflow/ccc": [
+        "packages/ccc/src/index.ts"
+      ]
+    }
   }
 }

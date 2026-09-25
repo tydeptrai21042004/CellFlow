@@ -21,8 +21,8 @@ export async function POST(request: Request) {
         data: { projectId: project.id },
       },
     });
-    const delivery = await deliverDueWebhooks(25);
-    return Response.json({ queued, delivery });
+    const delivery = await deliverDueWebhooks(25, project.id);
+    return Response.json({ queued, delivery }, { status: 202 });
   } catch (error) {
     return errorResponse(error);
   }

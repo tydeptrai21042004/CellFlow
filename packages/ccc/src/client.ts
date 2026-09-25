@@ -143,7 +143,7 @@ export class CellFlowClient {
 
   async wait(
     intentId: string,
-    options: { timeoutMs?: number; intervalMs?: number; until?: "committed" | "confirmed" } = {},
+    options: { timeoutMs?: number; intervalMs?: number; until?: "committed" | "confirmed" | "verified" } = {},
   ): Promise<IntentView> {
     const timeoutMs = options.timeoutMs ?? 120_000;
     const intervalMs = options.intervalMs ?? 2_500;
@@ -157,6 +157,7 @@ export class CellFlowClient {
       }
       if (until === "committed" && ["COMMITTED", "CONFIRMED"].includes(current.status)) return current;
       if (until === "confirmed" && current.status === "CONFIRMED") return current;
+      if (until === "verified" && current.status === "CONFIRMED" && current.assertionStatus === "VERIFIED") return current;
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
     const current = await this.get(intentId);

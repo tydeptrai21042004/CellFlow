@@ -3,6 +3,7 @@ import type { Sql } from "postgres";
 import { deriveOverallStatus, type ConfirmationPolicy, type ExecutionSnapshot } from "@cellflow/core";
 import { getSql } from "./client.js";
 import type {
+  EvidenceExportRecord,
   ExecutionRecord,
   IntentAggregate,
   IntentRecord,
@@ -61,9 +62,30 @@ function mapExecution(row: Record<string, unknown>): ExecutionRecord {
     nextReconcileAt: row.next_reconcile_at ? iso(row.next_reconcile_at as Date | string) : null,
     reconcileAttempts: Number(row.reconcile_attempts),
     version: Number(row.version),
+    reconcileLeaseId: row.reconcile_lease_id ? String(row.reconcile_lease_id) : null,
+    reconcileLeaseUntil: row.reconcile_lease_until ? iso(row.reconcile_lease_until as Date | string) : null,
+    workflowRunId: row.workflow_run_id ? String(row.workflow_run_id) : null,
+    workflowStartedAt: row.workflow_started_at ? iso(row.workflow_started_at as Date | string) : null,
+    workflowCompletedAt: row.workflow_completed_at ? iso(row.workflow_completed_at as Date | string) : null,
     createdAt: iso(row.created_at as Date | string),
     updatedAt: iso(row.updated_at as Date | string),
   };
+}
+
+function webhookEventType(kind: string, status: string): string {
+  if (kind === "CREATED") return "intent.created";
+  if (kind === "ASSERTION_VERIFIED") return "intent.assertion_verified";
+  if (kind === "ASSERTION_FAILED") return "intent.assertion_failed";
+  if (kind === "REORG_DETECTED") return "intent.reorged";
+  if (kind === "CONFIRMED") return "intent.confirmed";
+  return `intent.${status.toLowerCase()}`;
+}
+
+export class OptimisticConcurrencyError extends Error {
+  constructor(message = "Execution changed concurrently") {
+    super(message);
+    this.name = "OptimisticConcurrencyError";
+  }
 }
 
 export class CellFlowRepository {
@@ -72,6 +94,62 @@ export class CellFlowRepository {
   async ping(): Promise<boolean> {
     const rows = await this.sql`select 1 as ok`;
     return Number(rows[0]?.ok) === 1;
+  }
+
+  private async insertEventAndOutbox(tx: Sql, input: {
+    projectId: string;
+    intentRowId: string;
+    executionId: string;
+    intentId: string;
+    txHash: string | null;
+    kind: string;
+    fromStatus: string | null;
+    toStatus: string;
+    reason?: string;
+    rawObservation?: unknown;
+    occurredAt: Date;
+    snapshot: ExecutionSnapshot;
+    assertionStatus?: string | null;
+  }): Promise<string> {
+    const eventId = randomUUID();
+    await tx`
+      insert into state_events (
+        id, project_id, intent_row_id, execution_id, kind,
+        from_status, to_status, reason, raw_observation, occurred_at
+      ) values (
+        ${eventId}, ${input.projectId}, ${input.intentRowId}, ${input.executionId}, ${input.kind},
+        ${input.fromStatus}, ${input.toStatus}, ${input.reason ?? null},
+        ${input.rawObservation === undefined ? null : tx.json(input.rawObservation)}, ${input.occurredAt}
+      )
+    `;
+
+    const eventType = webhookEventType(input.kind, input.toStatus);
+    const payload = {
+      id: eventId,
+      type: eventType,
+      occurredAt: input.occurredAt.toISOString(),
+      data: {
+        intentId: input.intentId,
+        txHash: input.txHash,
+        status: input.toStatus,
+        submissionStatus: input.snapshot.submissionStatus,
+        chainStatus: input.snapshot.chainStatus,
+        workflowStatus: input.snapshot.workflowStatus,
+        confirmationCount: input.snapshot.confirmationCount,
+        assertionStatus: input.assertionStatus ?? null,
+      },
+    };
+    await tx`
+      insert into webhook_deliveries (
+        id, project_id, endpoint_id, event_id, event_type, payload, next_attempt_at
+      )
+      select
+        gen_random_uuid()::text, ${input.projectId}, w.id, ${eventId}, ${eventType}, ${tx.json(payload)}, now()
+      from webhook_endpoints w
+      where w.project_id = ${input.projectId} and w.enabled = true
+      on conflict (endpoint_id, event_id) do nothing
+    `;
+    return eventId;
   }
 
   async createProject(input: {
@@ -113,6 +191,64 @@ export class CellFlowRepository {
     return mapProject(row);
   }
 
+  async createApiKey(input: { projectId: string; id: string; prefix: string; hash: string; label: string }): Promise<void> {
+    await this.sql`
+      insert into api_keys (id, project_id, key_prefix, key_hash, label)
+      values (${input.id}, ${input.projectId}, ${input.prefix}, ${input.hash}, ${input.label})
+    `;
+  }
+
+  async listApiKeys(projectId: string): Promise<Array<{
+    id: string; prefix: string; label: string; revokedAt: string | null; lastUsedAt: string | null; createdAt: string;
+  }>> {
+    const rows = await this.sql`
+      select id, key_prefix, label, revoked_at, last_used_at, created_at
+      from api_keys where project_id = ${projectId} order by created_at asc
+    `;
+    return rows.map((row) => ({
+      id: String(row.id), prefix: String(row.key_prefix), label: String(row.label),
+      revokedAt: row.revoked_at ? iso(row.revoked_at as Date | string) : null,
+      lastUsedAt: row.last_used_at ? iso(row.last_used_at as Date | string) : null,
+      createdAt: iso(row.created_at as Date | string),
+    }));
+  }
+
+  async revokeApiKey(projectId: string, keyId: string): Promise<"REVOKED" | "NOT_FOUND" | "LAST_ACTIVE"> {
+    return this.sql.begin(async (tx) => {
+      const rows = await tx`select id, revoked_at from api_keys where project_id = ${projectId} and id = ${keyId} for update`;
+      if (!rows[0]) return "NOT_FOUND" as const;
+      if (rows[0].revoked_at) return "REVOKED" as const;
+      const active = await tx`select count(*)::int as count from api_keys where project_id = ${projectId} and revoked_at is null`;
+      if (Number(active[0]?.count ?? 0) <= 1) return "LAST_ACTIVE" as const;
+      await tx`update api_keys set revoked_at = now() where project_id = ${projectId} and id = ${keyId}`;
+      return "REVOKED" as const;
+    });
+  }
+
+  async consumeRateLimit(projectId: string, bucket: string, limit: number, windowSeconds: number): Promise<boolean> {
+    const rows = await this.sql`
+      insert into rate_limit_windows (project_id, bucket, window_start, request_count)
+      values (
+        ${projectId}, ${bucket},
+        to_timestamp(floor(extract(epoch from now()) / ${windowSeconds}) * ${windowSeconds}), 1
+      )
+      on conflict (project_id, bucket, window_start)
+      do update set request_count = rate_limit_windows.request_count + 1
+      returning request_count
+    `;
+    return Number(rows[0]?.request_count ?? limit + 1) <= limit;
+  }
+
+
+  async pruneRateLimits(olderThanHours = 24): Promise<number> {
+    const rows = await this.sql`
+      delete from rate_limit_windows
+      where window_start < now() - (${Math.max(1, Math.min(olderThanHours, 720))} * interval '1 hour')
+      returning project_id
+    `;
+    return rows.length;
+  }
+
   async createIntent(input: {
     project: ProjectRecord;
     intentId: string;
@@ -121,58 +257,53 @@ export class CellFlowRepository {
     txHash?: string | null;
     submissionStatus?: ExecutionRecord["submissionStatus"];
   }): Promise<{ aggregate: IntentAggregate; created: boolean }> {
-    return this.sql.begin(async (tx) => {
+    let created = false;
+    await this.sql.begin(async (tx) => {
       const intentRowId = randomUUID();
       const inserted = await tx`
         insert into intents (id, project_id, intent_id, metadata, expected_cells)
-        values (
-          ${intentRowId}, ${input.project.id}, ${input.intentId},
-          ${tx.json(input.metadata)}, ${tx.json(input.expectedCells)}
-        )
+        values (${intentRowId}, ${input.project.id}, ${input.intentId}, ${tx.json(input.metadata)}, ${tx.json(input.expectedCells)})
         on conflict (project_id, intent_id) do nothing
         returning *
       `;
-
-      let intentRow = inserted[0];
-      let created = true;
-      if (!intentRow) {
-        created = false;
-        const existing = await tx`
-          select * from intents where project_id = ${input.project.id} and intent_id = ${input.intentId} limit 1
-        `;
-        intentRow = existing[0];
-      }
-      if (!intentRow) throw new Error("Intent upsert failed");
-
-      if (created) {
-        await tx`
-          insert into executions (
-            id, project_id, intent_row_id, tx_hash, network,
-            submission_status, chain_status, workflow_status, confirmation_policy,
-            next_reconcile_at
-          ) values (
-            ${randomUUID()}, ${input.project.id}, ${String(intentRow.id)}, ${input.txHash ?? null}, ${input.project.network},
-            ${input.submissionStatus ?? (input.txHash ? "SUBMITTED" : "NOT_SUBMITTED")},
-            'UNOBSERVED', 'IDLE', ${tx.json(input.project.confirmationPolicy)},
-            ${input.txHash ? new Date() : null}
-          )
-        `;
-      }
-
-      const executionRows = await tx`
-        select * from executions where intent_row_id = ${String(intentRow.id)} limit 1
-      `;
-      const executionRow = executionRows[0];
-      if (!executionRow) throw new Error("Execution missing for intent");
-
-      return {
-        created,
-        aggregate: {
-          intent: mapIntent(intentRow),
-          execution: mapExecution(executionRow),
-        },
+      if (inserted.length === 0) return;
+      created = true;
+      const executionId = randomUUID();
+      const submissionStatus = input.submissionStatus ?? (input.txHash ? "SUBMITTED" : "NOT_SUBMITTED");
+      const snapshot: ExecutionSnapshot = {
+        submissionStatus,
+        chainStatus: "UNOBSERVED",
+        workflowStatus: "IDLE",
+        confirmationPolicy: input.project.confirmationPolicy,
+        confirmationCount: 0,
       };
+      await tx`
+        insert into executions (
+          id, project_id, intent_row_id, tx_hash, network,
+          submission_status, chain_status, workflow_status, confirmation_policy, next_reconcile_at
+        ) values (
+          ${executionId}, ${input.project.id}, ${intentRowId}, ${input.txHash ?? null}, ${input.project.network},
+          ${submissionStatus}, 'UNOBSERVED', 'IDLE', ${tx.json(input.project.confirmationPolicy)},
+          ${input.txHash ? new Date() : null}
+        )
+      `;
+      await this.insertEventAndOutbox(tx as Sql, {
+        projectId: input.project.id,
+        intentRowId,
+        executionId,
+        intentId: input.intentId,
+        txHash: input.txHash ?? null,
+        kind: "CREATED",
+        fromStatus: null,
+        toStatus: deriveOverallStatus(snapshot),
+        reason: "Intent accepted and persisted atomically with its audit event",
+        occurredAt: new Date(),
+        snapshot,
+      });
     });
+    const aggregate = await this.getIntent(input.project.id, input.intentId);
+    if (!aggregate) throw new Error("Intent upsert failed");
+    return { aggregate, created };
   }
 
   async getIntent(projectId: string, intentId: string): Promise<IntentAggregate | null> {
@@ -190,13 +321,9 @@ export class CellFlowRepository {
     if (!row) return null;
     return {
       intent: mapIntent({
-        id: row.i_id,
-        project_id: row.i_project_id,
-        intent_id: row.i_intent_id,
-        metadata: row.i_metadata,
-        expected_cells: row.i_expected_cells,
-        created_at: row.i_created_at,
-        updated_at: row.i_updated_at,
+        id: row.i_id, project_id: row.i_project_id, intent_id: row.i_intent_id,
+        metadata: row.i_metadata, expected_cells: row.i_expected_cells,
+        created_at: row.i_created_at, updated_at: row.i_updated_at,
       }),
       execution: mapExecution(row),
     };
@@ -216,56 +343,115 @@ export class CellFlowRepository {
     `;
     return rows.map((row) => ({
       intent: mapIntent({
-        id: row.i_id,
-        project_id: row.i_project_id,
-        intent_id: row.i_intent_id,
-        metadata: row.i_metadata,
-        expected_cells: row.i_expected_cells,
-        created_at: row.i_created_at,
-        updated_at: row.i_updated_at,
+        id: row.i_id, project_id: row.i_project_id, intent_id: row.i_intent_id,
+        metadata: row.i_metadata, expected_cells: row.i_expected_cells,
+        created_at: row.i_created_at, updated_at: row.i_updated_at,
       }),
       execution: mapExecution(row),
     }));
   }
 
   async attachTransaction(input: {
-    projectId: string;
-    intentId: string;
+    aggregate: IntentAggregate;
     txHash: string;
     submissionStatus: ExecutionRecord["submissionStatus"];
     nextReconcileAt?: Date | null;
-  }): Promise<IntentAggregate | null> {
-    const aggregate = await this.getIntent(input.projectId, input.intentId);
-    if (!aggregate) return null;
-    if (aggregate.execution.txHash && aggregate.execution.txHash !== input.txHash) {
+    fromStatus: string;
+    toStatus: string;
+    reason: string;
+  }): Promise<IntentAggregate> {
+    if (input.aggregate.execution.txHash && input.aggregate.execution.txHash !== input.txHash) {
       throw new Error("INTENT_TX_CONFLICT");
     }
-    await this.sql`
-      update executions
-      set tx_hash = ${input.txHash}, submission_status = ${input.submissionStatus},
-          next_reconcile_at = ${input.nextReconcileAt ?? new Date()},
-          version = version + 1, updated_at = now()
-      where id = ${aggregate.execution.id} and project_id = ${input.projectId}
-    `;
-    return this.getIntent(input.projectId, input.intentId);
+    await this.sql.begin(async (tx) => {
+      const updated = await tx`
+        update executions
+        set tx_hash = ${input.txHash}, submission_status = ${input.submissionStatus},
+            next_reconcile_at = ${input.nextReconcileAt ?? null}, version = version + 1, updated_at = now()
+        where id = ${input.aggregate.execution.id}
+          and project_id = ${input.aggregate.intent.projectId}
+          and version = ${input.aggregate.execution.version}
+        returning *
+      `;
+      const row = updated[0];
+      if (!row) throw new OptimisticConcurrencyError();
+      const snapshot: ExecutionSnapshot = {
+        submissionStatus: input.submissionStatus,
+        chainStatus: input.aggregate.execution.chainStatus,
+        workflowStatus: input.aggregate.execution.workflowStatus,
+        confirmationPolicy: input.aggregate.execution.confirmationPolicy,
+        confirmationCount: input.aggregate.execution.confirmationCount,
+        ...(input.aggregate.execution.committedBlockHash ? { committedBlockHash: input.aggregate.execution.committedBlockHash } : {}),
+        ...(input.aggregate.execution.committedBlockNumber ? { committedBlockNumber: input.aggregate.execution.committedBlockNumber } : {}),
+      };
+      await this.insertEventAndOutbox(tx as Sql, {
+        projectId: input.aggregate.intent.projectId,
+        intentRowId: input.aggregate.intent.id,
+        executionId: input.aggregate.execution.id,
+        intentId: input.aggregate.intent.intentId,
+        txHash: input.txHash,
+        kind: "SUBMISSION_UPDATED",
+        fromStatus: input.fromStatus,
+        toStatus: input.toStatus,
+        reason: input.reason,
+        occurredAt: new Date(),
+        snapshot,
+        assertionStatus: input.aggregate.execution.assertionStatus,
+      });
+      await tx`update intents set updated_at = now() where id = ${input.aggregate.intent.id}`;
+    });
+    const result = await this.getIntent(input.aggregate.intent.projectId, input.aggregate.intent.intentId);
+    if (!result) throw new Error("Intent disappeared after transaction attach");
+    return result;
   }
 
   async markSubmissionStatus(input: {
-    projectId: string;
-    intentId: string;
+    aggregate: IntentAggregate;
     status: ExecutionRecord["submissionStatus"];
     scheduleReconcile?: boolean;
-  }): Promise<IntentAggregate | null> {
-    const aggregate = await this.getIntent(input.projectId, input.intentId);
-    if (!aggregate) return null;
-    await this.sql`
-      update executions
-      set submission_status = ${input.status},
-          next_reconcile_at = ${input.scheduleReconcile ? new Date() : aggregate.execution.nextReconcileAt},
-          version = version + 1, updated_at = now()
-      where id = ${aggregate.execution.id} and project_id = ${input.projectId}
-    `;
-    return this.getIntent(input.projectId, input.intentId);
+    fromStatus: string;
+    toStatus: string;
+    reason: string;
+  }): Promise<IntentAggregate> {
+    await this.sql.begin(async (tx) => {
+      const updated = await tx`
+        update executions
+        set submission_status = ${input.status},
+            next_reconcile_at = ${input.scheduleReconcile ? new Date() : input.aggregate.execution.nextReconcileAt},
+            version = version + 1, updated_at = now()
+        where id = ${input.aggregate.execution.id}
+          and project_id = ${input.aggregate.intent.projectId}
+          and version = ${input.aggregate.execution.version}
+        returning id
+      `;
+      if (updated.length !== 1) throw new OptimisticConcurrencyError();
+      const snapshot: ExecutionSnapshot = {
+        submissionStatus: input.status,
+        chainStatus: input.aggregate.execution.chainStatus,
+        workflowStatus: input.aggregate.execution.workflowStatus,
+        confirmationPolicy: input.aggregate.execution.confirmationPolicy,
+        confirmationCount: input.aggregate.execution.confirmationCount,
+        ...(input.aggregate.execution.committedBlockHash ? { committedBlockHash: input.aggregate.execution.committedBlockHash } : {}),
+        ...(input.aggregate.execution.committedBlockNumber ? { committedBlockNumber: input.aggregate.execution.committedBlockNumber } : {}),
+      };
+      await this.insertEventAndOutbox(tx as Sql, {
+        projectId: input.aggregate.intent.projectId,
+        intentRowId: input.aggregate.intent.id,
+        executionId: input.aggregate.execution.id,
+        intentId: input.aggregate.intent.intentId,
+        txHash: input.aggregate.execution.txHash,
+        kind: "SUBMISSION_UPDATED",
+        fromStatus: input.fromStatus,
+        toStatus: input.toStatus,
+        reason: input.reason,
+        occurredAt: new Date(),
+        snapshot,
+        assertionStatus: input.aggregate.execution.assertionStatus,
+      });
+    });
+    const result = await this.getIntent(input.aggregate.intent.projectId, input.aggregate.intent.intentId);
+    if (!result) throw new Error("Intent disappeared after submission update");
+    return result;
   }
 
   async applySnapshot(input: {
@@ -283,6 +469,17 @@ export class CellFlowRepository {
     assertionStatus?: string | null;
     assertionResult?: unknown;
   }): Promise<string | null> {
+    const prior = input.aggregate.execution;
+    const nextAssertionStatus = input.assertionStatus ?? prior.assertionStatus;
+    const meaningful =
+      prior.submissionStatus !== input.snapshot.submissionStatus ||
+      prior.chainStatus !== input.snapshot.chainStatus ||
+      prior.workflowStatus !== input.snapshot.workflowStatus ||
+      prior.committedBlockHash !== (input.snapshot.committedBlockHash ?? null) ||
+      prior.committedBlockNumber !== (input.snapshot.committedBlockNumber ?? null) ||
+      prior.rejectionReason !== (input.snapshot.rejectionReason ?? null) ||
+      prior.assertionStatus !== nextAssertionStatus;
+
     return this.sql.begin(async (tx) => {
       const updated = await tx`
         update executions set
@@ -293,33 +490,35 @@ export class CellFlowRepository {
           committed_block_hash = ${input.snapshot.committedBlockHash ?? null},
           committed_block_number = ${input.snapshot.committedBlockNumber ?? null},
           rejection_reason = ${input.snapshot.rejectionReason ?? null},
-          assertion_status = ${input.assertionStatus ?? input.aggregate.execution.assertionStatus},
-          assertion_result = ${input.assertionResult === undefined ? input.aggregate.execution.assertionResult : tx.json(input.assertionResult)},
-          last_raw_observation = ${input.event.rawObservation === undefined ? input.aggregate.execution.lastRawObservation : tx.json(input.event.rawObservation)},
-          last_observed_at = ${input.event.rawObservation === undefined ? input.aggregate.execution.lastObservedAt : new Date(input.event.occurredAt)},
+          assertion_status = ${nextAssertionStatus},
+          assertion_result = ${input.assertionResult === undefined ? prior.assertionResult : tx.json(input.assertionResult)},
+          last_raw_observation = ${input.event.rawObservation === undefined ? prior.lastRawObservation : tx.json(input.event.rawObservation)},
+          last_observed_at = ${input.event.rawObservation === undefined ? prior.lastObservedAt : new Date(input.event.occurredAt)},
           next_reconcile_at = ${input.nextReconcileAt},
           reconcile_attempts = reconcile_attempts + 1,
           version = version + 1,
           updated_at = now()
-        where id = ${input.aggregate.execution.id}
-          and project_id = ${input.aggregate.intent.projectId}
-          and version = ${input.aggregate.execution.version}
+        where id = ${prior.id} and project_id = ${input.aggregate.intent.projectId} and version = ${prior.version}
         returning id
       `;
-      if (updated.length !== 1) return null;
-      const eventId = randomUUID();
-      await tx`
-        insert into state_events (
-          id, project_id, intent_row_id, execution_id, kind,
-          from_status, to_status, reason, raw_observation, occurred_at
-        ) values (
-          ${eventId}, ${input.aggregate.intent.projectId}, ${input.aggregate.intent.id}, ${input.aggregate.execution.id}, ${input.event.kind},
-          ${input.event.fromStatus}, ${input.event.toStatus}, ${input.event.reason ?? null},
-          ${input.event.rawObservation === undefined ? null : tx.json(input.event.rawObservation)}, ${new Date(input.event.occurredAt)}
-        )
-      `;
+      if (updated.length !== 1) throw new OptimisticConcurrencyError();
       await tx`update intents set updated_at = now() where id = ${input.aggregate.intent.id}`;
-      return eventId;
+      if (!meaningful) return null;
+      return this.insertEventAndOutbox(tx as Sql, {
+        projectId: input.aggregate.intent.projectId,
+        intentRowId: input.aggregate.intent.id,
+        executionId: prior.id,
+        intentId: input.aggregate.intent.intentId,
+        txHash: prior.txHash,
+        kind: input.event.kind,
+        fromStatus: input.event.fromStatus,
+        toStatus: input.event.toStatus,
+        ...(input.event.reason ? { reason: input.event.reason } : {}),
+        ...(input.event.rawObservation === undefined ? {} : { rawObservation: input.event.rawObservation }),
+        occurredAt: new Date(input.event.occurredAt),
+        snapshot: input.snapshot,
+        assertionStatus: nextAssertionStatus,
+      });
     });
   }
 
@@ -331,55 +530,78 @@ export class CellFlowRepository {
     reason?: string;
     rawObservation?: unknown;
   }): Promise<string> {
-    const id = randomUUID();
-    await this.sql`
-      insert into state_events (
-        id, project_id, intent_row_id, execution_id, kind,
-        from_status, to_status, reason, raw_observation, occurred_at
-      ) values (
-        ${id}, ${input.aggregate.intent.projectId}, ${input.aggregate.intent.id}, ${input.aggregate.execution.id}, ${input.kind},
-        ${input.fromStatus}, ${input.toStatus}, ${input.reason ?? null},
-        ${input.rawObservation === undefined ? null : this.sql.json(input.rawObservation)}, now()
-      )
-    `;
-    return id;
+    return this.sql.begin(async (tx) => this.insertEventAndOutbox(tx as Sql, {
+      projectId: input.aggregate.intent.projectId,
+      intentRowId: input.aggregate.intent.id,
+      executionId: input.aggregate.execution.id,
+      intentId: input.aggregate.intent.intentId,
+      txHash: input.aggregate.execution.txHash,
+      kind: input.kind,
+      fromStatus: input.fromStatus,
+      toStatus: input.toStatus,
+      ...(input.reason ? { reason: input.reason } : {}),
+      ...(input.rawObservation === undefined ? {} : { rawObservation: input.rawObservation }),
+      occurredAt: new Date(),
+      snapshot: {
+        submissionStatus: input.aggregate.execution.submissionStatus,
+        chainStatus: input.aggregate.execution.chainStatus,
+        workflowStatus: input.aggregate.execution.workflowStatus,
+        confirmationPolicy: input.aggregate.execution.confirmationPolicy,
+        confirmationCount: input.aggregate.execution.confirmationCount,
+      },
+      assertionStatus: input.aggregate.execution.assertionStatus,
+    }));
   }
 
   async getEvents(projectId: string, intentRowId: string): Promise<StateEventRecord[]> {
     const rows = await this.sql`
       select sequence, id, kind, from_status, to_status, reason, raw_observation, occurred_at
-      from state_events
-      where project_id = ${projectId} and intent_row_id = ${intentRowId}
+      from state_events where project_id = ${projectId} and intent_row_id = ${intentRowId}
       order by sequence asc
     `;
     return rows.map((row) => ({
-      sequence: Number(row.sequence),
-      id: String(row.id),
-      kind: String(row.kind),
+      sequence: Number(row.sequence), id: String(row.id), kind: String(row.kind),
       fromStatus: row.from_status ? String(row.from_status) : null,
-      toStatus: String(row.to_status),
-      reason: row.reason ? String(row.reason) : null,
-      rawObservation: row.raw_observation ?? null,
-      occurredAt: iso(row.occurred_at as Date | string),
+      toStatus: String(row.to_status), reason: row.reason ? String(row.reason) : null,
+      rawObservation: row.raw_observation ?? null, occurredAt: iso(row.occurred_at as Date | string),
     }));
   }
 
-  async listDueExecutions(limit = 25): Promise<IntentAggregate[]> {
-    const rows = await this.sql`
-      select i.project_id, i.intent_id
-      from executions e join intents i on i.id = e.intent_row_id
-      where e.next_reconcile_at is not null and e.next_reconcile_at <= now()
-        and e.workflow_status not in ('CONFLICTED', 'EXPIRED')
-        and e.chain_status <> 'REJECTED'
-      order by e.next_reconcile_at asc
-      limit ${Math.min(Math.max(limit, 1), 100)}
-    `;
+  async claimDueExecutions(limit: number, leaseId: string, leaseSeconds = 60): Promise<IntentAggregate[]> {
+    const claimed = await this.sql.begin(async (tx) => {
+      const rows = await tx`
+        select e.id, i.project_id, i.intent_id
+        from executions e join intents i on i.id = e.intent_row_id
+        where e.next_reconcile_at is not null and e.next_reconcile_at <= now()
+          and e.workflow_status not in ('CONFLICTED', 'EXPIRED')
+          and e.chain_status <> 'REJECTED'
+          and (e.reconcile_lease_until is null or e.reconcile_lease_until < now())
+        order by e.next_reconcile_at asc
+        for update of e skip locked
+        limit ${Math.min(Math.max(limit, 1), 100)}
+      `;
+      for (const row of rows) {
+        await tx`
+          update executions
+          set reconcile_lease_id = ${leaseId}, reconcile_lease_until = now() + (${leaseSeconds} * interval '1 second')
+          where id = ${String(row.id)}
+        `;
+      }
+      return rows.map((row) => ({ projectId: String(row.project_id), intentId: String(row.intent_id) }));
+    });
     const result: IntentAggregate[] = [];
-    for (const row of rows) {
-      const aggregate = await this.getIntent(String(row.project_id), String(row.intent_id));
+    for (const row of claimed) {
+      const aggregate = await this.getIntent(row.projectId, row.intentId);
       if (aggregate) result.push(aggregate);
     }
     return result;
+  }
+
+  async releaseReconcileLease(executionId: string, leaseId: string): Promise<void> {
+    await this.sql`
+      update executions set reconcile_lease_id = null, reconcile_lease_until = null
+      where id = ${executionId} and reconcile_lease_id = ${leaseId}
+    `;
   }
 
   async getProject(projectId: string): Promise<ProjectRecord | null> {
@@ -387,125 +609,186 @@ export class CellFlowRepository {
     return rows[0] ? mapProject(rows[0]) : null;
   }
 
-  async createWebhookEndpoint(input: {
-    projectId: string;
-    url: string;
-    signingSecretEncrypted: string;
-  }): Promise<WebhookEndpointRecord> {
+  async claimWorkflowStart(projectId: string, intentId: string, claimId: string): Promise<string | null> {
+    const rows = await this.sql`
+      update executions e set
+        workflow_run_id = ${claimId}, workflow_started_at = now(), workflow_completed_at = null
+      from intents i
+      where e.intent_row_id = i.id and i.project_id = ${projectId} and i.intent_id = ${intentId}
+        and (e.workflow_run_id is null or e.workflow_completed_at is not null or e.workflow_started_at < now() - interval '24 hours')
+      returning e.workflow_run_id
+    `;
+    if (rows.length === 1) return claimId;
+    const current = await this.getIntent(projectId, intentId);
+    return current?.execution.workflowRunId ?? null;
+  }
+
+  async replaceWorkflowClaim(projectId: string, intentId: string, claimId: string, runId: string): Promise<void> {
+    await this.sql`
+      update executions e set workflow_run_id = ${runId}
+      from intents i
+      where e.intent_row_id = i.id and i.project_id = ${projectId} and i.intent_id = ${intentId}
+        and e.workflow_run_id = ${claimId}
+    `;
+  }
+
+  async releaseWorkflowClaim(projectId: string, intentId: string, claimId: string): Promise<void> {
+    await this.sql`
+      update executions e set workflow_run_id = null, workflow_started_at = null
+      from intents i
+      where e.intent_row_id = i.id and i.project_id = ${projectId} and i.intent_id = ${intentId}
+        and e.workflow_run_id = ${claimId}
+    `;
+  }
+
+  async markWorkflowCompleted(projectId: string, intentId: string): Promise<void> {
+    await this.sql`
+      update executions e set workflow_completed_at = now()
+      from intents i
+      where e.intent_row_id = i.id and i.project_id = ${projectId} and i.intent_id = ${intentId}
+    `;
+  }
+
+  async createWebhookEndpoint(input: { projectId: string; url: string; signingSecretEncrypted: string }): Promise<WebhookEndpointRecord> {
     const id = randomUUID();
     const rows = await this.sql`
       insert into webhook_endpoints (id, project_id, url, signing_secret_encrypted)
       values (${id}, ${input.projectId}, ${input.url}, ${input.signingSecretEncrypted})
       on conflict (project_id, url) do update set
-        signing_secret_encrypted = excluded.signing_secret_encrypted,
-        enabled = true,
-        secret_version = webhook_endpoints.secret_version + 1,
-        updated_at = now()
+        signing_secret_encrypted = excluded.signing_secret_encrypted, enabled = true,
+        secret_version = webhook_endpoints.secret_version + 1, updated_at = now()
       returning *
     `;
     const row = rows[0];
     if (!row) throw new Error("Webhook endpoint creation failed");
     return {
-      id: String(row.id),
-      projectId: String(row.project_id),
-      url: String(row.url),
-      signingSecretEncrypted: String(row.signing_secret_encrypted),
-      secretVersion: Number(row.secret_version),
-      enabled: Boolean(row.enabled),
+      id: String(row.id), projectId: String(row.project_id), url: String(row.url),
+      signingSecretEncrypted: String(row.signing_secret_encrypted), secretVersion: Number(row.secret_version), enabled: Boolean(row.enabled),
     };
   }
 
   async listWebhookEndpoints(projectId: string): Promise<WebhookEndpointRecord[]> {
-    const rows = await this.sql`
-      select * from webhook_endpoints where project_id = ${projectId} and enabled = true order by created_at asc
-    `;
+    const rows = await this.sql`select * from webhook_endpoints where project_id = ${projectId} and enabled = true order by created_at asc`;
     return rows.map((row) => ({
-      id: String(row.id),
-      projectId: String(row.project_id),
-      url: String(row.url),
-      signingSecretEncrypted: String(row.signing_secret_encrypted),
-      secretVersion: Number(row.secret_version),
-      enabled: Boolean(row.enabled),
+      id: String(row.id), projectId: String(row.project_id), url: String(row.url),
+      signingSecretEncrypted: String(row.signing_secret_encrypted), secretVersion: Number(row.secret_version), enabled: Boolean(row.enabled),
     }));
   }
 
-  async enqueueWebhookDeliveries(input: {
-    projectId: string;
-    eventId: string;
-    eventType: string;
-    payload: unknown;
-  }): Promise<number> {
-    const endpoints = await this.listWebhookEndpoints(input.projectId);
-    let count = 0;
-    for (const endpoint of endpoints) {
-      const result = await this.sql`
-        insert into webhook_deliveries (
-          id, project_id, endpoint_id, event_id, event_type, payload, next_attempt_at
-        ) values (
-          ${randomUUID()}, ${input.projectId}, ${endpoint.id}, ${input.eventId}, ${input.eventType}, ${this.sql.json(input.payload)}, now()
-        )
-        on conflict (endpoint_id, event_id) do nothing
-        returning id
-      `;
-      count += result.length;
-    }
-    return count;
+  async enqueueWebhookDeliveries(input: { projectId: string; eventId: string; eventType: string; payload: unknown }): Promise<number> {
+    const rows = await this.sql`
+      insert into webhook_deliveries (id, project_id, endpoint_id, event_id, event_type, payload, next_attempt_at)
+      select gen_random_uuid()::text, ${input.projectId}, w.id, ${input.eventId}, ${input.eventType}, ${this.sql.json(input.payload)}, now()
+      from webhook_endpoints w where w.project_id = ${input.projectId} and w.enabled = true
+      on conflict (endpoint_id, event_id) do nothing returning id
+    `;
+    return rows.length;
   }
 
-  async listDueWebhookDeliveries(limit = 25): Promise<WebhookDeliveryRecord[]> {
-    const rows = await this.sql`
-      select * from webhook_deliveries
-      where status in ('PENDING', 'RETRY') and next_attempt_at <= now()
-      order by next_attempt_at asc
-      limit ${Math.min(Math.max(limit, 1), 100)}
-    `;
+  async claimDueWebhookDeliveries(limit: number, leaseOwner: string, leaseSeconds = 60, projectId?: string): Promise<WebhookDeliveryRecord[]> {
+    const rows = await this.sql.begin(async (tx) => {
+      const candidates = projectId
+        ? await tx`
+            select id from webhook_deliveries
+            where project_id = ${projectId}
+              and (status in ('PENDING','RETRY') or (status = 'CLAIMED' and lease_until < now()))
+              and coalesce(next_attempt_at, now()) <= now()
+              and (lease_until is null or lease_until < now())
+            order by next_attempt_at asc for update skip locked
+            limit ${Math.min(Math.max(limit, 1), 100)}
+          `
+        : await tx`
+            select id from webhook_deliveries
+            where (status in ('PENDING','RETRY') or (status = 'CLAIMED' and lease_until < now()))
+              and coalesce(next_attempt_at, now()) <= now()
+              and (lease_until is null or lease_until < now())
+            order by next_attempt_at asc for update skip locked
+            limit ${Math.min(Math.max(limit, 1), 100)}
+          `;
+      if (candidates.length === 0) return [];
+      const result = [];
+      for (const candidate of candidates) {
+        const updated = await tx`
+          update webhook_deliveries set status = 'CLAIMED', lease_owner = ${leaseOwner},
+            lease_until = now() + (${leaseSeconds} * interval '1 second'), updated_at = now()
+          where id = ${String(candidate.id)} returning *
+        `;
+        if (updated[0]) result.push(updated[0]);
+      }
+      return result;
+    });
     return rows.map((row) => ({
-      id: String(row.id),
-      projectId: String(row.project_id),
-      endpointId: String(row.endpoint_id),
-      eventId: String(row.event_id),
-      eventType: String(row.event_type),
-      payload: row.payload,
-      attemptCount: Number(row.attempt_count),
-      status: String(row.status),
+      id: String(row.id), projectId: String(row.project_id), endpointId: String(row.endpoint_id),
+      eventId: String(row.event_id), eventType: String(row.event_type), payload: row.payload,
+      attemptCount: Number(row.attempt_count), status: String(row.status),
       nextAttemptAt: row.next_attempt_at ? iso(row.next_attempt_at as Date | string) : null,
+      leaseOwner: row.lease_owner ? String(row.lease_owner) : null,
+      leaseUntil: row.lease_until ? iso(row.lease_until as Date | string) : null,
     }));
   }
 
   async getWebhookEndpoint(projectId: string, endpointId: string): Promise<WebhookEndpointRecord | null> {
-    const rows = await this.sql`
-      select * from webhook_endpoints where project_id = ${projectId} and id = ${endpointId} limit 1
-    `;
+    const rows = await this.sql`select * from webhook_endpoints where project_id = ${projectId} and id = ${endpointId} limit 1`;
     const row = rows[0];
     if (!row) return null;
     return {
-      id: String(row.id),
-      projectId: String(row.project_id),
-      url: String(row.url),
-      signingSecretEncrypted: String(row.signing_secret_encrypted),
-      secretVersion: Number(row.secret_version),
-      enabled: Boolean(row.enabled),
+      id: String(row.id), projectId: String(row.project_id), url: String(row.url),
+      signingSecretEncrypted: String(row.signing_secret_encrypted), secretVersion: Number(row.secret_version), enabled: Boolean(row.enabled),
     };
   }
 
   async completeWebhookDelivery(input: {
     id: string;
+    leaseOwner?: string;
     success: boolean;
     responseStatus?: number;
     error?: string;
     retryAt?: Date;
   }): Promise<void> {
+    if (input.leaseOwner) {
+      await this.sql`
+        update webhook_deliveries set
+          attempt_count = attempt_count + 1,
+          status = ${input.success ? "DELIVERED" : input.retryAt ? "RETRY" : "FAILED"},
+          response_status = ${input.responseStatus ?? null}, last_error = ${input.error ?? null},
+          next_attempt_at = ${input.retryAt ?? null}, delivered_at = ${input.success ? new Date() : null},
+          lease_owner = null, lease_until = null, updated_at = now()
+        where id = ${input.id} and lease_owner = ${input.leaseOwner}
+      `;
+      return;
+    }
     await this.sql`
       update webhook_deliveries set
         attempt_count = attempt_count + 1,
         status = ${input.success ? "DELIVERED" : input.retryAt ? "RETRY" : "FAILED"},
-        response_status = ${input.responseStatus ?? null},
-        last_error = ${input.error ?? null},
-        next_attempt_at = ${input.retryAt ?? null},
-        delivered_at = ${input.success ? new Date() : null},
-        updated_at = now()
+        response_status = ${input.responseStatus ?? null}, last_error = ${input.error ?? null},
+        next_attempt_at = ${input.retryAt ?? null}, delivered_at = ${input.success ? new Date() : null},
+        lease_owner = null, lease_until = null, updated_at = now()
       where id = ${input.id}
     `;
+  }
+
+  async recordEvidenceExport(input: {
+    projectId: string;
+    intentRowId: string;
+    sha256: string;
+    schemaVersion: string;
+    maxEventSequence: number;
+    document: unknown;
+  }): Promise<EvidenceExportRecord> {
+    const id = randomUUID();
+    const rows = await this.sql`
+      insert into evidence_exports (id, project_id, intent_row_id, evidence_sha256, schema_version, max_event_sequence, document)
+      values (${id}, ${input.projectId}, ${input.intentRowId}, ${input.sha256}, ${input.schemaVersion}, ${input.maxEventSequence}, ${this.sql.json(input.document)})
+      on conflict (intent_row_id, evidence_sha256) do update set document = excluded.document
+      returning *
+    `;
+    const row = rows[0];
+    if (!row) throw new Error("Evidence export insert failed");
+    return {
+      id: String(row.id), evidenceSha256: String(row.evidence_sha256), schemaVersion: String(row.schema_version),
+      maxEventSequence: Number(row.max_event_sequence), createdAt: iso(row.created_at as Date | string),
+    };
   }
 
   async executionPublicView(aggregate: IntentAggregate): Promise<Record<string, unknown>> {
@@ -533,6 +816,7 @@ export class CellFlowRepository {
       committedBlockNumber: snapshot.committedBlockNumber ?? null,
       assertionStatus: aggregate.execution.assertionStatus,
       assertionResult: aggregate.execution.assertionResult,
+      workflowRunId: aggregate.execution.workflowRunId,
       createdAt: aggregate.intent.createdAt,
       updatedAt: aggregate.execution.updatedAt,
     };

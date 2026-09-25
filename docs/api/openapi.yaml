@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: CellFlow API
-  version: 0.1.0
-  description: Durable CKB transaction lifecycle, reconciliation, confirmation and expected-Cell verification.
+  version: 0.2.0
+  description: Durable CKB intent lifecycle, canonical-chain reconciliation, confirmation, live-Cell verification, evidence, and signed webhook delivery.
 servers:
   - url: https://your-cellflow.vercel.app
 security:
@@ -26,12 +26,12 @@ paths:
     post:
       security: []
       summary: Create a project and first API key
-      description: Requires the deployment master secret as an Authorization Bearer credential. The returned API key is shown only once.
+      description: Requires CELLFLOW_BOOTSTRAP_TOKEN as an Authorization Bearer credential. In production the route is disabled unless CELLFLOW_SETUP_ENABLED=true. The encryption key is never sent to the browser.
       parameters:
         - in: header
           name: Authorization
           required: true
-          schema: { type: string, example: "Bearer <CELLFLOW_MASTER_SECRET>" }
+          schema: { type: string, example: "Bearer <CELLFLOW_BOOTSTRAP_TOKEN>" }
       requestBody:
         required: true
         content:
@@ -146,6 +146,33 @@ paths:
         - $ref: '#/components/parameters/IntentId'
       responses:
         '200': { description: Evidence document }
+  /api/v1/api-keys:
+    get:
+      summary: List API key metadata (never returns key material)
+      responses:
+        '200': { description: API key metadata }
+    post:
+      summary: Create a replacement/rotated API key; secret material is returned once
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label: { type: string, maxLength: 80, default: rotated }
+      responses:
+        '201': { description: API key created }
+  /api/v1/api-keys/{keyId}:
+    delete:
+      summary: Revoke an API key (the last active key cannot be revoked)
+      parameters:
+        - in: path
+          name: keyId
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: API key revoked }
+        '409': { $ref: '#/components/responses/Error' }
   /api/v1/webhooks:
     get:
       summary: List webhook endpoints
@@ -200,6 +227,7 @@ components:
       required: [outputIndex]
       properties:
         outputIndex: { type: integer, minimum: 0, maximum: 1024 }
+        mode: { type: string, enum: [created, live], default: created }
         capacity: { type: string, pattern: '^0x[0-9a-fA-F]*$' }
         lock: { $ref: '#/components/schemas/ScriptAssertion' }
         type:

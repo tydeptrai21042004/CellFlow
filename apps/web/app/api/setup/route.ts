@@ -1,11 +1,11 @@
-import { errorResponse, requireMasterSecret, setupSchema } from "@cellflow/api";
+import { errorResponse, requireBootstrapToken, setupSchema } from "@cellflow/api";
 import { readJson, service } from "../../../lib/server";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
   try {
-    requireMasterSecret(request.headers.get("authorization"));
+    requireBootstrapToken(request.headers.get("authorization"));
     const input = setupSchema.parse(await readJson(request));
     const result = await service.setupProject(input);
     return Response.json({ project: result.project, apiKey: result.apiKey }, { status: 201 });

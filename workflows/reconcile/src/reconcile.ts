@@ -1,17 +1,30 @@
+import { randomUUID } from "node:crypto";
 import {
   applyChainObservation,
   deriveOverallStatus,
   setWorkflowStatus,
   type ExecutionSnapshot,
 } from "@cellflow/core";
-import { verifyExpectedCells, type ExpectedCellAssertion } from "@cellflow/assertions";
-import { CellFlowRepository, snapshotFromExecution, type IntentAggregate } from "@cellflow/db";
+import {
+  verifyExpectedCell,
+  verifyLiveCell,
+  type AssertionResult,
+  type ExpectedCellAssertion,
+} from "@cellflow/assertions";
+import {
+  CellFlowRepository,
+  OptimisticConcurrencyError,
+  snapshotFromExecution,
+  type IntentAggregate,
+} from "@cellflow/db";
 import { CkbRpcClient, observeTransaction } from "./rpc.js";
 
-function backoffMs(attempt: number, chainStatus: string): number {
-  if (chainStatus === "COMMITTED") return 12_000;
-  const base = Math.min(5 * 60_000, 5_000 * 2 ** Math.min(attempt, 6));
-  return base;
+export function nextReconcileDelayMs(attempt: number, chainStatus: string): number {
+  if (["PENDING", "PROPOSED", "COMMITTED"].includes(chainStatus)) return 12_000;
+  if (chainStatus === "UNKNOWN" || chainStatus === "UNOBSERVED") {
+    return Math.min(5 * 60_000, 10_000 * 2 ** Math.min(attempt, 5));
+  }
+  return 20_000;
 }
 
 function endpointsFor(projectRpcUrl: string | null): string[] {
@@ -26,11 +39,53 @@ export interface ReconcileResult {
   changed: boolean;
   status: string;
   assertionStatus: string | null;
+  terminal: boolean;
+  nextDelayMs: number | null;
+  error?: string;
 }
 
-export async function reconcileIntent(
+function isTerminal(snapshot: ExecutionSnapshot, assertionStatus: string | null, expectedCount: number): boolean {
+  if (snapshot.workflowStatus === "CONFLICTED" || snapshot.workflowStatus === "EXPIRED" || snapshot.chainStatus === "REJECTED") {
+    return true;
+  }
+  if (snapshot.workflowStatus !== "CONFIRMED") return false;
+  return expectedCount === 0 || assertionStatus === "VERIFIED";
+}
+
+async function evaluateAssertions(input: {
+  client: CkbRpcClient;
+  endpoint: string;
+  txHash: string;
+  transaction: Parameters<typeof verifyExpectedCell>[0] | null | undefined;
+  assertions: ExpectedCellAssertion[];
+}): Promise<{ status: "PENDING" | "VERIFIED" | "FAILED"; results: AssertionResult[] | null; reason?: string }> {
+  if (!input.transaction) return { status: "PENDING", results: null };
+  const results: AssertionResult[] = [];
+  for (const assertion of input.assertions) {
+    const created = verifyExpectedCell(input.transaction, assertion);
+    results.push(created);
+    if (!created.ok) {
+      return { status: "FAILED", results, reason: "Committed transaction did not create the expected Cell state" };
+    }
+    if ((assertion.mode ?? "created") === "live") {
+      try {
+        const live = await input.client.getLiveCell(input.txHash, assertion.outputIndex, input.endpoint);
+        const liveResult = verifyLiveCell(live, assertion);
+        results.push(liveResult);
+        if (!liveResult.ok) {
+          return { status: "FAILED", results, reason: "Expected output Cell is not live or no longer matches the asserted state" };
+        }
+      } catch {
+        return { status: "PENDING", results: null };
+      }
+    }
+  }
+  return { status: "VERIFIED", results };
+}
+
+async function reconcileIntentOnce(
   aggregate: IntentAggregate,
-  repository = new CellFlowRepository(),
+  repository: CellFlowRepository,
 ): Promise<ReconcileResult> {
   const txHash = aggregate.execution.txHash;
   if (!txHash) {
@@ -40,104 +95,30 @@ export async function reconcileIntent(
       changed: false,
       status: deriveOverallStatus(snapshotFromExecution(aggregate.execution)),
       assertionStatus: aggregate.execution.assertionStatus,
+      terminal: false,
+      nextDelayMs: null,
     };
   }
 
   const project = await repository.getProject(aggregate.intent.projectId);
   if (!project) throw new Error("Project missing during reconciliation");
-  const client = new CkbRpcClient(endpointsFor(project.rpcUrl));
+  const urls = endpointsFor(project.rpcUrl);
+  if (urls.length === 0) throw new Error("No CKB RPC endpoint configured");
+  const client = new CkbRpcClient(urls);
   const prior = snapshotFromExecution(aggregate.execution);
 
+  let observed;
   try {
-    const { observation, rpcResult } = await observeTransaction(client, txHash);
-    const applied = applyChainObservation(prior, observation);
-    let nextSnapshot: ExecutionSnapshot = applied.snapshot;
-    let assertionStatus = aggregate.execution.assertionStatus;
-    let assertionResult: unknown = aggregate.execution.assertionResult;
-    let eventKind = applied.event.kind;
-    let reason = applied.event.reason;
-
-    const shouldAssert = nextSnapshot.workflowStatus === "CONFIRMED" && aggregate.intent.expectedCells.length > 0;
-    if (shouldAssert) {
-      const transaction = rpcResult?.transaction;
-      if (!transaction) {
-        assertionStatus = "PENDING";
-      } else {
-        const results = verifyExpectedCells(
-          transaction,
-          aggregate.intent.expectedCells as ExpectedCellAssertion[],
-        );
-        assertionResult = results;
-        if (results.every((result) => result.ok)) {
-          assertionStatus = "VERIFIED";
-          eventKind = "ASSERTION_VERIFIED";
-        } else {
-          assertionStatus = "FAILED";
-          nextSnapshot = setWorkflowStatus(nextSnapshot, "CONFLICTED");
-          eventKind = "ASSERTION_FAILED";
-          reason = "Committed transaction did not produce the expected Cell state";
-        }
-      }
-    }
-
-    const terminal =
-      nextSnapshot.workflowStatus === "CONFIRMED" ||
-      nextSnapshot.workflowStatus === "CONFLICTED" ||
-      nextSnapshot.workflowStatus === "EXPIRED" ||
-      nextSnapshot.chainStatus === "REJECTED";
-    const nextReconcileAt = terminal
-      ? null
-      : new Date(Date.now() + backoffMs(aggregate.execution.reconcileAttempts, nextSnapshot.chainStatus));
-
-    const eventId = await repository.applySnapshot({
-      aggregate,
-      snapshot: nextSnapshot,
-      event: {
-        kind: eventKind,
-        fromStatus: applied.event.fromOverall,
-        toStatus: deriveOverallStatus(nextSnapshot),
-        ...(reason ? { reason } : {}),
-        rawObservation: observation.raw,
-        occurredAt: observation.observedAt,
-      },
-      nextReconcileAt,
-      assertionStatus,
-      assertionResult,
-    });
-
-    if (eventId) {
-      await repository.enqueueWebhookDeliveries({
-        projectId: aggregate.intent.projectId,
-        eventId,
-        eventType: `intent.${deriveOverallStatus(nextSnapshot).toLowerCase()}`,
-        payload: {
-          id: eventId,
-          type: `intent.${deriveOverallStatus(nextSnapshot).toLowerCase()}`,
-          occurredAt: observation.observedAt,
-          data: {
-            intentId: aggregate.intent.intentId,
-            txHash,
-            status: deriveOverallStatus(nextSnapshot),
-            submissionStatus: nextSnapshot.submissionStatus,
-            chainStatus: nextSnapshot.chainStatus,
-            workflowStatus: nextSnapshot.workflowStatus,
-            confirmationCount: nextSnapshot.confirmationCount,
-            assertionStatus,
-          },
-        },
-      });
-    }
-
-    return {
-      intentId: aggregate.intent.intentId,
+    observed = await observeTransaction(
+      client,
       txHash,
-      changed: Boolean(eventId),
-      status: deriveOverallStatus(nextSnapshot),
-      assertionStatus: assertionStatus ?? null,
-    };
+      prior.committedBlockHash && prior.committedBlockNumber
+        ? { blockHash: prior.committedBlockHash, blockNumber: prior.committedBlockNumber }
+        : undefined,
+    );
   } catch (error) {
     const reconciling = setWorkflowStatus(prior, "RECONCILING");
-    const nextReconcileAt = new Date(Date.now() + backoffMs(aggregate.execution.reconcileAttempts, "UNKNOWN"));
+    const nextDelayMs = nextReconcileDelayMs(aggregate.execution.reconcileAttempts, "UNKNOWN");
     const eventId = await repository.applySnapshot({
       aggregate,
       snapshot: { ...reconciling, chainStatus: "UNKNOWN" },
@@ -148,7 +129,7 @@ export async function reconcileIntent(
         reason: error instanceof Error ? error.message : "RPC observation failed",
         occurredAt: new Date().toISOString(),
       },
-      nextReconcileAt,
+      nextReconcileAt: new Date(Date.now() + nextDelayMs),
     });
     return {
       intentId: aggregate.intent.intentId,
@@ -156,16 +137,112 @@ export async function reconcileIntent(
       changed: Boolean(eventId),
       status: "RECONCILING",
       assertionStatus: aggregate.execution.assertionStatus,
+      terminal: false,
+      nextDelayMs,
     };
   }
+
+  const { observation, rpcResult, endpoint } = observed;
+  const applied = applyChainObservation(prior, observation);
+  let nextSnapshot: ExecutionSnapshot = applied.snapshot;
+  let assertionStatus = aggregate.execution.assertionStatus;
+  let assertionResult: unknown = aggregate.execution.assertionResult;
+  let eventKind = applied.event.kind;
+  let reason = applied.event.reason;
+
+  const assertions = aggregate.intent.expectedCells as ExpectedCellAssertion[];
+  if (nextSnapshot.workflowStatus === "CONFIRMED" && assertions.length > 0) {
+    const evaluated = await evaluateAssertions({
+      client,
+      endpoint,
+      txHash,
+      transaction: rpcResult?.transaction,
+      assertions,
+    });
+    assertionStatus = evaluated.status;
+    assertionResult = evaluated.results;
+    if (evaluated.status === "VERIFIED") {
+      eventKind = "ASSERTION_VERIFIED";
+    } else if (evaluated.status === "FAILED") {
+      nextSnapshot = setWorkflowStatus(nextSnapshot, "CONFLICTED");
+      eventKind = "ASSERTION_FAILED";
+      reason = evaluated.reason;
+    }
+  }
+
+  const terminal = isTerminal(nextSnapshot, assertionStatus ?? null, assertions.length);
+  const nextDelayMs = terminal
+    ? null
+    : nextReconcileDelayMs(aggregate.execution.reconcileAttempts, nextSnapshot.chainStatus);
+  const nextReconcileAt = nextDelayMs === null ? null : new Date(Date.now() + nextDelayMs);
+
+  const eventId = await repository.applySnapshot({
+    aggregate,
+    snapshot: nextSnapshot,
+    event: {
+      kind: eventKind,
+      fromStatus: applied.event.fromOverall,
+      toStatus: deriveOverallStatus(nextSnapshot),
+      ...(reason ? { reason } : {}),
+      rawObservation: observation.raw,
+      occurredAt: observation.observedAt,
+    },
+    nextReconcileAt,
+    assertionStatus,
+    assertionResult,
+  });
+
+  return {
+    intentId: aggregate.intent.intentId,
+    txHash,
+    changed: Boolean(eventId),
+    status: deriveOverallStatus(nextSnapshot),
+    assertionStatus: assertionStatus ?? null,
+    terminal,
+    nextDelayMs,
+  };
+}
+
+export async function reconcileIntent(
+  initial: IntentAggregate,
+  repository = new CellFlowRepository(),
+): Promise<ReconcileResult> {
+  let aggregate = initial;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await reconcileIntentOnce(aggregate, repository);
+    } catch (error) {
+      if (!(error instanceof OptimisticConcurrencyError) || attempt === 2) throw error;
+      const refreshed = await repository.getIntent(aggregate.intent.projectId, aggregate.intent.intentId);
+      if (!refreshed) throw error;
+      aggregate = refreshed;
+    }
+  }
+  throw new Error("Reconciliation concurrency retry exhausted");
 }
 
 export async function reconcileDue(limit = 25): Promise<ReconcileResult[]> {
   const repository = new CellFlowRepository();
-  const due = await repository.listDueExecutions(limit);
+  const leaseId = randomUUID();
+  const due = await repository.claimDueExecutions(limit, leaseId, 75);
   const results: ReconcileResult[] = [];
   for (const aggregate of due) {
-    results.push(await reconcileIntent(aggregate, repository));
+    try {
+      results.push(await reconcileIntent(aggregate, repository));
+    } catch (error) {
+      results.push({
+        intentId: aggregate.intent.intentId,
+        txHash: aggregate.execution.txHash,
+        changed: false,
+        status: "ERROR",
+        assertionStatus: aggregate.execution.assertionStatus,
+        terminal: false,
+        nextDelayMs: null,
+        error: error instanceof Error ? error.message : "Reconciliation worker failed",
+      });
+    } finally {
+      await repository.releaseReconcileLease(aggregate.execution.id, leaseId).catch(() => undefined);
+    }
   }
   return results;
 }

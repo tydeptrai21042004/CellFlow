@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 type Intent = {
   intentId: string;
@@ -30,20 +30,15 @@ async function jsonRequest(path: string, apiKey?: string, init: RequestInit = {}
 
 export default function Dashboard() {
   const [apiKey, setApiKey] = useState("");
-  const [masterSecret, setMasterSecret] = useState("");
+  const [bootstrapToken, setBootstrapToken] = useState("");
   const [projectName, setProjectName] = useState("CellFlow Demo");
   const [createdKey, setCreatedKey] = useState("");
   const [intents, setIntents] = useState<Intent[]>([]);
   const [intentId, setIntentId] = useState("");
   const [txHash, setTxHash] = useState("");
-  const [message, setMessage] = useState("Enter an API key to inspect a project.");
+  const [message, setMessage] = useState("Enter an API key to inspect a project. Keys are kept only in page memory.");
   const [busy, setBusy] = useState(false);
   const canLoad = useMemo(() => apiKey.startsWith("cf_live_"), [apiKey]);
-
-  useEffect(() => {
-    const saved = sessionStorage.getItem("cellflowApiKey");
-    if (saved) setApiKey(saved);
-  }, []);
 
   async function load() {
     if (!canLoad) return;
@@ -51,7 +46,6 @@ export default function Dashboard() {
     try {
       const body = await jsonRequest("/api/v1/intents", apiKey);
       setIntents(body.intents ?? []);
-      sessionStorage.setItem("cellflowApiKey", apiKey);
       setMessage(`${body.intents?.length ?? 0} intent(s) loaded.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Failed to load intents");
@@ -65,7 +59,7 @@ export default function Dashboard() {
     try {
       const body = await jsonRequest("/api/setup", undefined, {
         method: "POST",
-        headers: { authorization: `Bearer ${masterSecret}` },
+        headers: { authorization: `Bearer ${bootstrapToken}` },
         body: JSON.stringify({ name: projectName, network: "testnet" }),
       });
       setCreatedKey(body.apiKey);
@@ -133,12 +127,12 @@ export default function Dashboard() {
         <div>
           <div className="kicker">First deploy</div>
           <h2>Create a project</h2>
-          <p>Use your server master secret once. The generated API key is only shown in the response.</p>
+          <p>Use the dedicated bootstrap token. The encryption key never enters the browser. Disable setup in production after provisioning.</p>
         </div>
         <div className="form-grid">
           <input value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="Project name" />
-          <input type="password" value={masterSecret} onChange={(e) => setMasterSecret(e.target.value)} placeholder="CELLFLOW_MASTER_SECRET" />
-          <button disabled={busy || masterSecret.length < 32} onClick={setup}>Create project</button>
+          <input type="password" value={bootstrapToken} onChange={(e) => setBootstrapToken(e.target.value)} placeholder="CELLFLOW_BOOTSTRAP_TOKEN" />
+          <button disabled={busy || bootstrapToken.length < 24} onClick={setup}>Create project</button>
         </div>
         {createdKey && <code className="secret">{createdKey}</code>}
       </div>

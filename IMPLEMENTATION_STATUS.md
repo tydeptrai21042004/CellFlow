@@ -1,40 +1,36 @@
-# Implementation Status — v0.1
+# Implementation status — V0.2
+
+CellFlow is now an implemented CKB-focused MVP with a hardened serverless concurrency model.
 
 ## Implemented
 
-- Core three-axis status model and overall projection.
-- Confirmation-depth policy and explicit reorg handling.
-- PostgreSQL schema, migrations and tenant-scoped repository methods.
-- Project/API-key bootstrap with hashed API keys.
-- Idempotent intent creation via database unique constraint.
-- Next.js 16 API routes and operational dashboard.
-- CKB JSON-RPC reconciliation.
-- Vercel Workflow durable reconciliation loop.
-- Cron repair sweep.
-- CCC pre-broadcast deterministic tx-hash integration.
-- Expected Cell assertions.
-- HMAC webhook signing/verification, encrypted endpoint secrets and retry records.
-- Public-address-only, DNS-pinned webhook transport.
-- Evidence export.
-- Core automated tests and GitHub Actions CI definition.
+- Next.js/Vercel API and operations dashboard.
+- PostgreSQL durable source of truth and versioned migrations.
+- Idempotent business intents and deterministic pre-broadcast tx identity.
+- Separate submission, chain and workflow status axes.
+- CKB RPC reconciliation with same-endpoint observations, confirmation depth and explicit canonical-block reorg checks.
+- Created-Cell and live-Cell assertions.
+- Optimistic concurrency retries.
+- Reconciliation leases and webhook-delivery leases using `SKIP LOCKED`.
+- Deduplicated durable Workflow starts.
+- Atomic state + event + webhook outbox creation.
+- Signed webhook retries with DNS pinning/SSRF protection.
+- Persisted deterministic evidence snapshots.
+- Separate bootstrap/encryption secrets and database-backed request rate limiting.
+- Zero-dependency operator CLI.
+- OpenAPI contract, deployment documentation and CI definition.
 
-## Requires deployment environment to exercise end to end
+## Validation status in this exported ZIP
 
-These are integration/runtime checks rather than missing source implementation:
+- Core lifecycle/reorg suite: passing.
+- Cell assertion suite: passing.
+- Hardening/tree suite: passing.
+- TypeScript/TSX syntax parse audit: passing.
+- Full `npm install`, strict workspace typecheck and `next build`: not executable in the export environment because npm registry access is unavailable. CI performs these steps in a network-enabled runner.
 
-1. `npm install` and `npm run build` in an internet-enabled environment.
-2. Apply migration to an actual PostgreSQL/Neon database.
-3. Run a real CKB testnet transaction through the CCC helper.
-4. Observe Workflow SDK execution on Vercel.
-5. Register a public HTTPS webhook receiver and verify retry behavior.
-6. Run the failure scenarios against controllable RPC/network faults.
+## Recommended next validation before public production use
 
-## Not claimed by v0.1
-
-- signing or key custody;
-- fee bumping/replacement;
-- Fiber/RGB++ orchestration;
-- general multi-chain support;
-- an indexer/explorer;
-- billing/multi-region SaaS control plane;
-- completed independent external CKBuilder adoption validation.
+1. Run `npm install` and commit the generated `package-lock.json`.
+2. Run `npm run migrate && npm test && npm run typecheck && npm run build`.
+3. Run a real CKB testnet Alice→Bob integration with `mode: live` assertion evidence.
+4. Add a second independent CKBuilder integration to validate the reusable API boundary.

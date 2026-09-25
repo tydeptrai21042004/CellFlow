@@ -9,7 +9,7 @@ import {
 
 function encryptionKey(masterSecret: string): Buffer {
   if (masterSecret.length < 32) {
-    throw new Error("CELLFLOW_MASTER_SECRET must be at least 32 characters");
+    throw new Error("CELLFLOW_ENCRYPTION_KEY must be at least 32 characters");
   }
   return createHash("sha256").update(masterSecret).digest();
 }

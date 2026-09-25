@@ -23,11 +23,19 @@ export function isBlockedIp(ip: string): boolean {
   }
   if (family === 6) {
     const value = ip.toLowerCase();
-    const mapped = value.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1];
-    if (mapped && isIP(mapped) === 4) return isBlockedIp(mapped);
+    const mappedDotted = value.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1];
+    if (mappedDotted && isIP(mappedDotted) === 4) return isBlockedIp(mappedDotted);
+    const mappedHex = value.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    if (mappedHex?.[1] && mappedHex[2]) {
+      const high = Number.parseInt(mappedHex[1], 16);
+      const low = Number.parseInt(mappedHex[2], 16);
+      const mapped = `${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`;
+      return isBlockedIp(mapped);
+    }
     return (
       value === "::" || value === "::1" || value.startsWith("fc") || value.startsWith("fd") ||
-      /^fe[89ab]/.test(value) || value.startsWith("ff") || value.startsWith("2001:db8")
+      /^fe[89ab]/.test(value) || value.startsWith("ff") || value.startsWith("2001:db8") ||
+      value.startsWith("2002:") || value.startsWith("2001:0000:") || value.startsWith("64:ff9b::")
     );
   }
   return true;

@@ -78,6 +78,9 @@ export interface ChainObservation {
   blockNumber?: string;
   tipBlockNumber?: string;
   rejectionReason?: string;
+  rpcEndpoint?: string;
+  canonicalBlockHash?: string;
+  priorCommitCanonical?: boolean;
 }
 
 export interface TransitionEvent {

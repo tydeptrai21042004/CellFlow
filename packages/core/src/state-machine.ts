@@ -115,11 +115,14 @@ function reorgAgainstPriorCommit(
   observation: ChainObservation,
 ): boolean {
   if (!snapshot.committedBlockHash) return false;
+  // V0.2 only calls a reorg when the RPC proves the previously recorded block is
+  // no longer canonical, or the same transaction is committed in a different block.
+  // A pending/proposed/unknown response by itself may be a lagging node and is not proof.
+  if (observation.priorCommitCanonical === false) return true;
   if (observation.status === "COMMITTED") {
     return Boolean(observation.blockHash && observation.blockHash !== snapshot.committedBlockHash);
   }
-  // UNKNOWN alone is not authoritative evidence of a reorg; another RPC may simply be stale or unavailable.
-  return observation.status === "PENDING" || observation.status === "PROPOSED";
+  return false;
 }
 
 export function applyChainObservation(
@@ -137,6 +140,31 @@ export function applyChainObservation(
   }
 
   const reorgDetected = reorgAgainstPriorCommit(snapshot, observation);
+
+  if (
+    snapshot.chainStatus === "COMMITTED" &&
+    observation.status !== "COMMITTED" &&
+    observation.status !== "REJECTED" &&
+    !reorgDetected
+  ) {
+    const preserved: ExecutionSnapshot = {
+      ...snapshot,
+      workflowStatus: snapshot.workflowStatus === "CONFIRMED" ? "CONFIRMED" : "RECONCILING",
+    };
+    return {
+      snapshot: preserved,
+      reorgDetected: false,
+      event: {
+        kind: "CHAIN_OBSERVED",
+        fromOverall: before,
+        toOverall: deriveOverallStatus(preserved),
+        at: observation.observedAt,
+        observation,
+        reason: "Non-committed RPC observation did not prove the previously committed block left the canonical chain",
+      },
+    };
+  }
+
   const confirmationCount =
     observation.status === "COMMITTED"
       ? computeConfirmationCount(observation.blockNumber, observation.tipBlockNumber)

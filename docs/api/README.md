@@ -1,6 +1,6 @@
 # CellFlow REST API
 
-The V1 API is implemented by the Next.js route handlers under `apps/web/app/api`. Project endpoints use `Authorization: Bearer cf_live_...`; `/api/setup` is bootstrap-only and instead requires `x-cellflow-master-secret` to match `CELLFLOW_MASTER_SECRET`.
+The V1 API is implemented by the Next.js route handlers under `apps/web/app/api`. Project endpoints use `Authorization: Bearer cf_live_...`; `/api/setup` is bootstrap-only and instead requires `Authorization: Bearer <CELLFLOW_BOOTSTRAP_TOKEN>` to match `CELLFLOW_ENCRYPTION_KEY`.
 
 The machine-readable contract is [`openapi.yaml`](./openapi.yaml).
 

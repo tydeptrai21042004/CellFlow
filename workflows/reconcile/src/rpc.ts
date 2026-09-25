@@ -20,6 +20,18 @@ export interface RpcTransactionResult {
   [key: string]: unknown;
 }
 
+export interface RpcLiveCellResult {
+  status: string;
+  cell?: {
+    output: {
+      capacity: string;
+      lock: { code_hash: string; hash_type: string; args: string };
+      type?: { code_hash: string; hash_type: string; args: string } | null;
+    };
+    data?: { content?: string; hash?: string } | null;
+  } | null;
+}
+
 interface JsonRpcEnvelope<T> {
   jsonrpc: "2.0";
   id: number;
@@ -27,30 +39,38 @@ interface JsonRpcEnvelope<T> {
   error?: { code: number; message: string; data?: unknown };
 }
 
-export class CkbRpcClient {
+class RpcEndpointSession {
   private requestId = 1;
+  constructor(readonly url: string) {}
 
+  async call<T>(method: string, params: unknown[] = []): Promise<T> {
+    const response = await fetch(this.url, {
+      method: "POST",
+      headers: { "content-type": "application/json", "user-agent": "CellFlow/0.2" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: this.requestId++, method, params }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) throw new Error(`RPC HTTP ${response.status}`);
+    const text = await response.text();
+    if (text.length > 2_000_000) throw new Error("RPC response exceeds 2 MB safety limit");
+    const payload = JSON.parse(text) as JsonRpcEnvelope<T>;
+    if (payload.error) throw new Error(`RPC ${payload.error.code}: ${payload.error.message}`);
+    if (!("result" in payload)) throw new Error("RPC response did not include result");
+    return payload.result as T;
+  }
+}
+
+export class CkbRpcClient {
   constructor(private readonly urls: string[]) {
     if (urls.length === 0) throw new Error("At least one CKB RPC URL is required");
   }
 
-  async call<T>(method: string, params: unknown[] = []): Promise<T> {
+  private async withSession<T>(operation: (session: RpcEndpointSession) => Promise<T>): Promise<T> {
     let lastError: Error | undefined;
     for (const url of this.urls) {
+      const session = new RpcEndpointSession(url);
       try {
-        const response = await fetch(url, {
-          method: "POST",
-          headers: { "content-type": "application/json", "user-agent": "CellFlow/0.1" },
-          body: JSON.stringify({ jsonrpc: "2.0", id: this.requestId++, method, params }),
-          signal: AbortSignal.timeout(10_000),
-        });
-        if (!response.ok) throw new Error(`RPC HTTP ${response.status}`);
-        const text = await response.text();
-        if (text.length > 2_000_000) throw new Error("RPC response exceeds 2 MB safety limit");
-        const payload = JSON.parse(text) as JsonRpcEnvelope<T>;
-        if (payload.error) throw new Error(`RPC ${payload.error.code}: ${payload.error.message}`);
-        if (!("result" in payload)) throw new Error("RPC response did not include result");
-        return payload.result as T;
+        return await operation(session);
       } catch (error) {
         lastError = error instanceof Error ? error : new Error("Unknown RPC failure");
       }
@@ -60,6 +80,10 @@ export class CkbRpcClient {
       lastError?.message ?? "All configured CKB RPC endpoints failed",
       503,
     );
+  }
+
+  async call<T>(method: string, params: unknown[] = []): Promise<T> {
+    return this.withSession((session) => session.call<T>(method, params));
   }
 
   async getTransaction(txHash: string): Promise<RpcTransactionResult | null> {
@@ -72,6 +96,104 @@ export class CkbRpcClient {
 
   async getTipHeader(): Promise<Record<string, unknown>> {
     return this.call<Record<string, unknown>>("get_tip_header", []);
+  }
+
+  async getLiveCell(txHash: string, outputIndex: number, endpoint?: string): Promise<RpcLiveCellResult | null> {
+    const params = [{ tx_hash: txHash, index: `0x${outputIndex.toString(16)}` }, true];
+    if (endpoint) return new RpcEndpointSession(endpoint).call<RpcLiveCellResult | null>("get_live_cell", params);
+    return this.call<RpcLiveCellResult | null>("get_live_cell", params);
+  }
+
+  async observe(txHash: string, prior?: { blockHash: string; blockNumber: string }): Promise<{
+    observation: ChainObservation;
+    rpcResult: RpcTransactionResult | null;
+    endpoint: string;
+  }> {
+    return this.withSession(async (session) => {
+      const observedAt = new Date().toISOString();
+      const result = await session.call<RpcTransactionResult | null>("get_transaction", [txHash]);
+      let priorCommitCanonical: boolean | undefined;
+      if (prior) {
+        const canonical = await session.call<string | null>("get_block_hash", [prior.blockNumber]);
+        priorCommitCanonical = canonical?.toLowerCase() === prior.blockHash.toLowerCase();
+      }
+
+      if (!result || !result.tx_status) {
+        return {
+          observation: {
+            status: "UNKNOWN", observedAt,
+            raw: { txStatus: null, priorCommitCanonical },
+            rpcEndpoint: session.url,
+            ...(priorCommitCanonical === undefined ? {} : { priorCommitCanonical }),
+          },
+          rpcResult: result,
+          endpoint: session.url,
+        };
+      }
+
+      const status = result.tx_status.status;
+      if (status === "committed") {
+        const blockHash = result.tx_status.block_hash ?? undefined;
+        const [header, tip] = await Promise.all([
+          blockHash ? session.call<Record<string, unknown> | null>("get_header", [blockHash]) : Promise.resolve(null),
+          session.call<Record<string, unknown>>("get_tip_header", []),
+        ]);
+        const blockNumber = headerNumber(header);
+        const tipBlockNumber = headerNumber(tip);
+        const canonicalBlockHash = blockNumber
+          ? await session.call<string | null>("get_block_hash", [blockNumber])
+          : null;
+        const currentCanonical = !blockHash || !canonicalBlockHash
+          ? undefined
+          : canonicalBlockHash.toLowerCase() === blockHash.toLowerCase();
+        if (currentCanonical === false) {
+          return {
+            observation: {
+              status: "UNKNOWN", observedAt, rpcEndpoint: session.url,
+              raw: { txStatus: status, blockHash, blockNumber, canonicalBlockHash, priorCommitCanonical },
+              ...(canonicalBlockHash ? { canonicalBlockHash } : {}),
+              ...(priorCommitCanonical === undefined ? {} : { priorCommitCanonical }),
+            },
+            rpcResult: result,
+            endpoint: session.url,
+          };
+        }
+        return {
+          observation: {
+            status: "COMMITTED", observedAt, rpcEndpoint: session.url,
+            raw: { txStatus: status, blockHash, blockNumber, tipBlockNumber, canonicalBlockHash, priorCommitCanonical },
+            ...(blockHash ? { blockHash } : {}),
+            ...(blockNumber ? { blockNumber } : {}),
+            ...(tipBlockNumber ? { tipBlockNumber } : {}),
+            ...(canonicalBlockHash ? { canonicalBlockHash } : {}),
+            ...(priorCommitCanonical === undefined ? {} : { priorCommitCanonical }),
+          },
+          rpcResult: result,
+          endpoint: session.url,
+        };
+      }
+
+      const base = {
+        observedAt,
+        rpcEndpoint: session.url,
+        raw: { txStatus: status, reason: result.tx_status.reason ?? null, priorCommitCanonical },
+        ...(priorCommitCanonical === undefined ? {} : { priorCommitCanonical }),
+      };
+      if (status === "pending") return { observation: { ...base, status: "PENDING" as const }, rpcResult: result, endpoint: session.url };
+      if (status === "proposed") return { observation: { ...base, status: "PROPOSED" as const }, rpcResult: result, endpoint: session.url };
+      if (status === "rejected") {
+        return {
+          observation: {
+            ...base,
+            status: "REJECTED",
+            ...(result.tx_status.reason ? { rejectionReason: result.tx_status.reason } : {}),
+          },
+          rpcResult: result,
+          endpoint: session.url,
+        };
+      }
+      return { observation: { ...base, status: "UNKNOWN" as const }, rpcResult: result, endpoint: session.url };
+    });
   }
 }
 
@@ -88,52 +210,7 @@ function headerNumber(header: Record<string, unknown> | null): string | undefine
 export async function observeTransaction(
   client: CkbRpcClient,
   txHash: string,
-): Promise<{ observation: ChainObservation; rpcResult: RpcTransactionResult | null }> {
-  const observedAt = new Date().toISOString();
-  const result = await client.getTransaction(txHash);
-  if (!result || !result.tx_status) {
-    return {
-      observation: { status: "UNKNOWN", observedAt, raw: result },
-      rpcResult: result,
-    };
-  }
-
-  const status = result.tx_status.status;
-  if (status === "committed") {
-    const blockHash = result.tx_status.block_hash ?? undefined;
-    const [header, tip] = await Promise.all([
-      blockHash ? client.getHeader(blockHash) : Promise.resolve(null),
-      client.getTipHeader(),
-    ]);
-    return {
-      observation: {
-        status: "COMMITTED",
-        observedAt,
-        raw: result,
-        ...(blockHash ? { blockHash } : {}),
-        ...(headerNumber(header) ? { blockNumber: headerNumber(header) } : {}),
-        ...(headerNumber(tip) ? { tipBlockNumber: headerNumber(tip) } : {}),
-      },
-      rpcResult: result,
-    };
-  }
-
-  if (status === "pending") {
-    return { observation: { status: "PENDING", observedAt, raw: result }, rpcResult: result };
-  }
-  if (status === "proposed") {
-    return { observation: { status: "PROPOSED", observedAt, raw: result }, rpcResult: result };
-  }
-  if (status === "rejected") {
-    return {
-      observation: {
-        status: "REJECTED",
-        observedAt,
-        raw: result,
-        ...(result.tx_status.reason ? { rejectionReason: result.tx_status.reason } : {}),
-      },
-      rpcResult: result,
-    };
-  }
-  return { observation: { status: "UNKNOWN", observedAt, raw: result }, rpcResult: result };
+  prior?: { blockHash: string; blockNumber: string },
+): Promise<{ observation: ChainObservation; rpcResult: RpcTransactionResult | null; endpoint: string }> {
+  return client.observe(txHash, prior);
 }

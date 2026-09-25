@@ -4,7 +4,7 @@
 
 CellFlow sits after transaction construction/signing and before application business finalization. It does not hold keys. It persists application intent, tracks CKB transaction state, survives serverless restarts, handles ambiguous broadcast outcomes, waits for configurable confirmation depth, detects reorg evidence, verifies expected output Cells, and emits signed webhooks.
 
-## Implemented MVP
+## Implemented V0.2 MVP
 
 This repository now contains a runnable implementation rather than only the original blueprint:
 
@@ -12,19 +12,21 @@ This repository now contains a runnable implementation rather than only the orig
 - PostgreSQL/Neon schema and repository layer;
 - database-enforced `(project_id, intent_id)` idempotency;
 - separated **submission**, **chain**, and **workflow** status axes;
-- CKB JSON-RPC reconciliation (`get_transaction`, `get_header`, `get_tip_header`);
+- CKB JSON-RPC reconciliation (`get_transaction`, `get_header`, `get_tip_header`, `get_block_hash`, `get_live_cell`) using one endpoint per observation;
 - configurable confirmation policy (`committed` or `depth:N`);
 - explicit reorg state rather than treating `COMMITTED` as permanently terminal;
 - Vercel Workflow SDK durable reconciliation loop;
 - Vercel Cron repair sweep as a secondary safety mechanism;
 - CCC integration that calculates `tx.hash()` and persists it **before broadcast**;
 - ambiguous-submit handling without automatic duplicate rebroadcast;
-- expected-Cell assertions for output index/capacity/lock/type/data;
-- signed per-endpoint webhooks, retries, encrypted secrets and DNS-pinned SSRF protection;
-- project/API-key bootstrap flow;
+- expected-Cell assertions for output index/capacity/lock/type/data with `created` and current `live` modes;
+- atomic state/event/webhook outbox writes, leased webhook retries, encrypted per-endpoint secrets and DNS-pinned SSRF protection;
+- project/API-key bootstrap flow with separate bootstrap and encryption secrets plus DB-backed rate limiting;
 - operational dashboard;
-- deterministic JSON evidence endpoint;
-- unit verification for the critical state machine.
+- persisted/deduplicated deterministic JSON evidence endpoint;
+- optimistic concurrency retry, reconciliation leases and deduplicated durable Workflow starts;
+- zero-dependency `cellflow` operator CLI;
+- lifecycle, reorg, assertion and hardening verification tests.
 
 ## Architecture
 
@@ -120,7 +122,10 @@ Required values:
 DATABASE_URL=postgresql://...
 CKB_NETWORK=testnet
 CKB_RPC_URL=https://testnet.ckbapp.dev/rpc
-CELLFLOW_MASTER_SECRET=<at-least-32-random-characters>
+CELLFLOW_ENCRYPTION_KEY=<at-least-32-random-characters>
+CELLFLOW_BOOTSTRAP_TOKEN=<different-bootstrap-token>
+CELLFLOW_SETUP_ENABLED=true
+CELLFLOW_RATE_LIMIT_PER_MINUTE=240
 CRON_SECRET=<different-random-secret>
 NEXT_PUBLIC_APP_URL=http://localhost:3000
 DEFAULT_CONFIRMATION_POLICY=depth:4
@@ -138,7 +143,7 @@ npm run migrate
 npm run dev
 ```
 
-Open `http://localhost:3000`. The setup panel accepts `CELLFLOW_MASTER_SECRET`, creates a project, and displays the generated `cf_live_...` API key once. Only its SHA-256 hash is stored.
+Open `http://localhost:3000`. The setup panel accepts `CELLFLOW_BOOTSTRAP_TOKEN`; the server-only encryption key never enters the browser. The generated `cf_live_...` API key is shown once and kept only in page memory. Set `CELLFLOW_SETUP_ENABLED=false` after production provisioning.
 
 ## API example
 
@@ -212,11 +217,12 @@ The helper uses CCC's deterministic `Transaction.hash()` before invoking CKB RPC
 
 ## Expected Cell assertions
 
-V1 supports narrow, auditable assertions:
+V0.2 supports narrow, auditable assertions. Use `mode: "created"` to prove the committed transaction created the Cell, or `mode: "live"` to additionally verify the current OutPoint with CKB `get_live_cell`:
 
 ```json
 {
   "outputIndex": 0,
+  "mode": "live",
   "capacity": "0x174876e800",
   "lock": {
     "codeHash": "0x...",
@@ -228,7 +234,7 @@ V1 supports narrow, auditable assertions:
 }
 ```
 
-If a transaction reaches confirmation policy but its expected Cells do not match, the execution becomes `CONFLICTED` and the evidence record contains the failed checks.
+Assertions must check at least one Cell field. If a transaction reaches its confirmation policy but the expected created/live Cell state does not match, the execution becomes `CONFLICTED`. If the transaction body or live-cell lookup is temporarily unavailable, the assertion stays `PENDING` and reconciliation continues instead of terminating early.
 
 ## Webhooks
 
@@ -272,14 +278,7 @@ npm run typecheck
 npm run build
 ```
 
-The critical tests cover:
-
-- pre-broadcast submission identity;
-- ambiguous submission recovery;
-- confirmation depth;
-- explicit reorg detection;
-- UNKNOWN-after-commit without false reorg classification;
-- transaction-hash validation.
+The dependency-free suite covers pre-broadcast identity, ambiguous recovery, confirmation depth, canonical reorg evidence, stale-node regressions, transition invariants, tx-hash validation, created/live Cell assertions, lease/outbox hardening invariants, browser secret handling and repository completeness.
 
 ## Vercel deployment
 
@@ -290,3 +289,8 @@ See `VERCEL_DEPLOYMENT.md`.
 ## Repository map
 
 See `TREE.md` and `IMPLEMENTATION_STATUS.md` for the implemented files and remaining production-hardening items.
+
+
+## V0.2 hardening details
+
+See `V0.2_HARDENING.md` for the concurrency, canonical-chain, live-Cell, security and deployment changes introduced in this export.

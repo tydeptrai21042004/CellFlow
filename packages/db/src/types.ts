@@ -46,6 +46,11 @@ export interface ExecutionRecord {
   nextReconcileAt: string | null;
   reconcileAttempts: number;
   version: number;
+  reconcileLeaseId: string | null;
+  reconcileLeaseUntil: string | null;
+  workflowRunId: string | null;
+  workflowStartedAt: string | null;
+  workflowCompletedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -85,6 +90,16 @@ export interface WebhookDeliveryRecord {
   attemptCount: number;
   status: string;
   nextAttemptAt: string | null;
+  leaseOwner: string | null;
+  leaseUntil: string | null;
+}
+
+export interface EvidenceExportRecord {
+  id: string;
+  evidenceSha256: string;
+  schemaVersion: string;
+  maxEventSequence: number;
+  createdAt: string;
 }
 
 export function snapshotFromExecution(row: ExecutionRecord): ExecutionSnapshot {
