@@ -41,3 +41,22 @@ Additional checks cover malformed block heights, confirmation depth boundaries, 
 ## Deployment note
 
 `vercel.json` intentionally does not specify `outputDirectory`. With the Vercel project Root Directory set to `apps/web`, the Next.js preset owns `.next` and avoids the incorrect `apps/web/apps/web/.next` lookup. The bundled cron schedule is once daily (`0 0 * * *`) so it is compatible with Vercel Hobby; Pro deployments can increase the repair-sweep cadence.
+
+
+## Surface separation revision — September 25, 2026
+
+The original V0.3 page mixed the marketing hero, live operator controls, integration management, first-deployment bootstrap, and a local-only simulation in one document. The revised information architecture uses explicit routes:
+
+- `/` — product overview and architecture boundary only.
+- `/console` — live project operations only.
+- `/demo` — local-only simulation only.
+- `/console/setup` — one-time privileged bootstrap only.
+
+Additional UI hardening:
+
+- production console clearly labels that it is rendering live project data;
+- the demo clearly states `no API key` and `no chain writes`;
+- setup controls are removed from the normal transaction workspace;
+- API keys remain page-memory only;
+- operator console has an application-style sub-navigation rather than landing-page anchors;
+- regression tests enforce the production/demo/provisioning boundary.

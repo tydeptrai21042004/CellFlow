@@ -26,9 +26,11 @@ test("state event and webhook outbox are emitted by the same repository transact
 });
 
 test("browser does not persist service API key in sessionStorage/localStorage", async () => {
-  const source = await read("apps/web/components/Dashboard.tsx");
-  assert.doesNotMatch(source, /sessionStorage|localStorage/);
-  assert.match(source, /CELLFLOW_BOOTSTRAP_TOKEN/);
+  const dashboard = await read("apps/web/components/Dashboard.tsx");
+  const bootstrap = await read("apps/web/components/BootstrapProject.tsx");
+  assert.doesNotMatch(dashboard, /sessionStorage|localStorage/);
+  assert.doesNotMatch(bootstrap, /sessionStorage|localStorage/);
+  assert.match(bootstrap, /CELLFLOW_BOOTSTRAP_TOKEN/);
 });
 
 test("encryption and bootstrap secrets are separate", async () => {

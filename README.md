@@ -22,7 +22,8 @@ This repository now contains a runnable implementation rather than only the orig
 - expected-Cell assertions for output index/capacity/lock/type/data with `created` and current `live` modes;
 - atomic state/event/webhook outbox writes, leased webhook retries, encrypted per-endpoint secrets and DNS-pinned SSRF protection;
 - project/API-key bootstrap flow with separate bootstrap and encryption secrets plus DB-backed rate limiting;
-- production-style operations dashboard with DB/RPC/readiness health, RPC latency, project-wide KPI aggregates, search/filtering, intent audit drawer and optional auto-refresh;
+- separated product surfaces: public overview (`/`), authenticated/live operator console (`/console`), isolated local-only walkthrough (`/demo`), and one-time provisioning (`/console/setup`);
+- production-style operations console with DB/RPC/readiness health, RPC latency, project-wide KPI aggregates, search/filtering, intent audit drawer and optional auto-refresh;
 - persisted/deduplicated deterministic JSON evidence endpoint;
 - optimistic concurrency retry, reconciliation leases and deduplicated durable Workflow starts;
 - zero-dependency `cellflow` operator CLI;
@@ -39,7 +40,7 @@ This repository now contains a runnable implementation rather than only the orig
 - machine-readable project-level evidence exports for reviewer/audit snapshots without exposing API-key material;
 - security headers, request correlation IDs, structured server-side error logging, and no-store/no-index API responses;
 - reproducible-release guardrails and a CI contract that requires a committed dependency lockfile before release;
-- 65 deterministic lifecycle, reorg, assertion, hardening, stability, production-readiness, UI-safety and deployment-contract tests.
+- 67 deterministic lifecycle, reorg, assertion, hardening, stability, production-readiness, UI-safety, route-separation and deployment-contract tests.
 
 ## Production hardening added September 25, 2026
 
@@ -196,9 +197,16 @@ This repository is a **production candidate**, not a claim of externally proven 
 
 The exported repository passes its deterministic offline suite, but the source environment used to prepare this ZIP did not have registry access, so a dependency-resolved `npm ci` / full workspace typecheck / Next.js production build could not be honestly re-run here.
 
-## Operations UI
+## Web surfaces
 
-The hosted dashboard is designed around production operations rather than a demo table. It exposes database/RPC health, project KPIs, search and status filtering, optional auto-refresh, intent-level confirmation and assertion state, an audit timeline, API-key/webhook management, and a local-only SkillPass walkthrough showing the ambiguous-submit recovery model. See `UI_PRODUCTION_UPGRADE.md` for the UI and test coverage.
+CellFlow deliberately separates public explanation, live operations, simulation, and provisioning:
+
+- `/` — public product/architecture overview. It contains no project credential input and no simulated operational metrics.
+- `/console` — real operator surface for project connection, health/readiness, transaction intents, evidence, reconciliation, API keys, and webhooks. Demo state is never rendered on this route.
+- `/demo` — isolated local-only SkillPass walkthrough. It requires no API key and performs no CKB writes.
+- `/console/setup` — one-time bootstrap/provisioning surface. It is kept out of the day-to-day operator workspace and should be disabled server-side after initial provisioning.
+
+This separation prevents simulated lifecycle state from being confused with live CKB/project data and keeps privileged setup controls away from normal operations. See `UI_PRODUCTION_UPGRADE.md` for the UI and regression coverage.
 
 ## API example
 

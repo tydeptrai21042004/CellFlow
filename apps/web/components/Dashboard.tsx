@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatRelativeTime, jsonRequest, shortHash } from "../lib/browser-api.ts";
-import ExampleUse from "./ExampleUse.tsx";
 import IntegrationsPanel from "./IntegrationsPanel.tsx";
 import IntentDrawer, { type IntentDetail } from "./IntentDrawer.tsx";
 import StatusBadge, { humanStatus, statusTone } from "./StatusBadge.tsx";
@@ -29,9 +28,6 @@ const txHashPattern = /^0x[0-9a-fA-F]{64}$/;
 
 export default function Dashboard() {
   const [apiKey, setApiKey] = useState("");
-  const [bootstrapToken, setBootstrapToken] = useState("");
-  const [projectName, setProjectName] = useState("CellFlow Demo");
-  const [createdKey, setCreatedKey] = useState("");
   const [intents, setIntents] = useState<Intent[]>([]);
   const [serverMetrics, setServerMetrics] = useState<{ total: number; active: number; confirmed: number; attention: number } | null>(null);
   const [operations, setOperations] = useState<Operations | null>(null);
@@ -44,7 +40,6 @@ export default function Dashboard() {
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [detail, setDetail] = useState<IntentDetail | null>(null);
   const [health, setHealth] = useState<Health>({ database: "checking", rpc: "checking", readiness: "checking" });
-  const [showSetup, setShowSetup] = useState(false);
   const canLoad = useMemo(() => apiKey.startsWith("cf_live_"), [apiKey]);
 
   const loadHealth = useCallback(async () => {
@@ -101,15 +96,6 @@ export default function Dashboard() {
     const matchesFilter = filter === "ALL" || (filter === "ATTENTION" ? statusTone(item.status) === "danger" || item.status === "UNKNOWN" : item.status === filter);
     return matchesSearch && matchesFilter;
   }), [filter, intents, search]);
-
-  async function setup() {
-    setBusy(true);
-    try {
-      const body = await jsonRequest<{ apiKey: string }>("/api/setup", undefined, { method: "POST", headers: { authorization: `Bearer ${bootstrapToken}` }, body: JSON.stringify({ name: projectName, network: "testnet" }) });
-      setCreatedKey(body.apiKey); setApiKey(body.apiKey); setMessage("Project created. Copy the API key now; CellFlow stores only its hash.");
-    } catch (error) { setMessage(error instanceof Error ? error.message : "Setup failed"); }
-    finally { setBusy(false); }
-  }
 
   async function track() {
     setBusy(true);
@@ -250,12 +236,7 @@ export default function Dashboard() {
       </section>
 
       <IntegrationsPanel apiKey={apiKey} onMessage={setMessage} />
-      <ExampleUse />
 
-      <section className="panel setup-collapsible">
-        <button className="setup-toggle" type="button" aria-expanded={showSetup} onClick={() => setShowSetup((value) => !value)}><span><span className="kicker">First deployment</span><strong>Bootstrap a project</strong><small>Only needed once. Disable CELLFLOW_SETUP_ENABLED afterwards.</small></span><b>{showSetup ? "Hide" : "Open setup"}</b></button>
-        {showSetup && <div className="setup-body"><div className="setup-form"><label><span>Project name</span><input value={projectName} onChange={(event) => setProjectName(event.target.value)} /></label><label><span>Bootstrap token</span><input type="password" autoComplete="off" value={bootstrapToken} onChange={(event) => setBootstrapToken(event.target.value)} placeholder="CELLFLOW_BOOTSTRAP_TOKEN" /></label><button disabled={busy || bootstrapToken.length < 24} onClick={setup}>Create project</button></div>{createdKey && <div className="one-time-secret"><span>Project API key · copy once</span><code>{createdKey}</code><button className="link-button" onClick={() => navigator.clipboard?.writeText(createdKey)}>Copy</button></div>}</div>}
-      </section>
 
       <IntentDrawer detail={detail} busy={busy} onClose={() => setDetail(null)} onReconcile={reconcile} onEvidence={evidence} onAddNote={addNote} />
     </section>

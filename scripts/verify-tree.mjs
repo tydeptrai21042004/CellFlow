@@ -9,6 +9,9 @@ const required = [
   "workflows/reconcile/src/index.ts",
   "apps/api/src/index.ts",
   "apps/web/app/page.tsx",
+  "apps/web/app/console/page.tsx",
+  "apps/web/app/demo/page.tsx",
+  "apps/web/app/console/setup/page.tsx",
   "apps/web/workflows/reconcile-intent.ts",
   "vercel.json",
 ];

@@ -20,7 +20,12 @@ CellFlow/
 │   │   ├── schemas.ts
 │   │   └── service.ts
 │   └── web/
-│       ├── app/api/
+│       ├── app/
+│       │   ├── page.tsx                 # public product overview
+│       │   ├── console/page.tsx         # live operator console
+│       │   ├── console/setup/page.tsx   # one-time bootstrap
+│       │   ├── demo/page.tsx            # local-only walkthrough
+│       │   └── api/
 │       │   ├── health/
 │       │   ├── ready/
 │       │   ├── setup/
@@ -33,8 +38,11 @@ CellFlow/
 │       │       ├── webhooks/
 │       │       └── api-keys/
 │       ├── components/
+│       │   ├── ProductHeader.tsx
 │       │   ├── Dashboard.tsx
 │       │   ├── IntegrationsPanel.tsx
+│       │   ├── BootstrapProject.tsx
+│       │   ├── ExampleUse.tsx
 │       │   └── IntentDrawer.tsx
 │       └── lib/
 ├── packages/

@@ -58,6 +58,36 @@ test("UI contains accessibility and reduced-motion affordances", async () => {
   assert.match(css, /\.sr-only/);
 });
 
+
+test("public, production console and demo are separate routes", async () => {
+  const home = await read("apps/web/app/page.tsx");
+  const consolePage = await read("apps/web/app/console/page.tsx");
+  const demoPage = await read("apps/web/app/demo/page.tsx");
+  const dashboard = await read("apps/web/components/Dashboard.tsx");
+
+  assert.match(home, /href=\"\/console\"/);
+  assert.match(home, /href=\"\/demo\"/);
+  assert.match(consolePage, /<Dashboard \/>/);
+  assert.doesNotMatch(consolePage, /ExampleUse/);
+  assert.doesNotMatch(dashboard, /ExampleUse/);
+  assert.match(demoPage, /<ExampleUse \/>/);
+  assert.doesNotMatch(demoPage, /Dashboard/);
+  assert.match(demoPage, /no API key/i);
+  assert.match(demoPage, /no chain writes/i);
+  const setupPage = await read("apps/web/app/console/setup/page.tsx");
+  assert.match(setupPage, /Project bootstrap/);
+  assert.doesNotMatch(consolePage, /CELLFLOW_BOOTSTRAP_TOKEN/);
+});
+
+test("production console clearly identifies live data and credential handling", async () => {
+  const consolePage = await read("apps/web/app/console/page.tsx");
+  const dashboard = await read("apps/web/components/Dashboard.tsx");
+  assert.match(consolePage, /Live project data/);
+  assert.match(consolePage, /No demo state is rendered on this route/);
+  assert.match(dashboard, /never persisted in Web Storage/i);
+  assert.match(dashboard, /Project connected/);
+});
+
 test("Vercel config lets Next.js own .next output and stays Hobby-cron compatible", async () => {
   const config = JSON.parse(await read("vercel.json"));
   assert.equal("outputDirectory" in config, false);
