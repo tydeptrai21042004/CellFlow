@@ -44,3 +44,38 @@ test("live Cell assertion verifies current Cell contents", () => {
   }, { outputIndex: 0, mode: "live", capacity: "0x64", data: "0xabcd" });
   assert.equal(result.ok, true);
 });
+
+
+test("missing output index produces a deterministic failed check", () => {
+  const result = verifyExpectedCell(tx, { outputIndex: 9, capacity: "0x64" });
+  assert.equal(result.ok, false);
+  assert.equal(result.checks[0]?.field, "outputIndex");
+});
+
+test("explicit null type fails when a type script is present", () => {
+  const typedTx = { outputs: [{ ...tx.outputs[0], type: lock }], outputs_data: ["0xabcd"] };
+  const result = verifyExpectedCell(typedTx, { outputIndex: 0, type: null });
+  assert.equal(result.ok, false);
+});
+
+test("lock mismatch identifies the failed field", () => {
+  const result = verifyExpectedCell(tx, { outputIndex: 0, lock: { args: "0x9999" } });
+  assert.equal(result.ok, false);
+  assert.equal(result.checks.some((check) => check.field === "lock.args" && !check.ok), true);
+});
+
+test("partial type assertion can verify one script field", () => {
+  const typedTx = { outputs: [{ ...tx.outputs[0], type: lock }], outputs_data: ["0xabcd"] };
+  const result = verifyExpectedCell(typedTx, { outputIndex: 0, type: { hashType: "type" } });
+  assert.equal(result.ok, true);
+});
+
+test("hex script values are compared case-insensitively", () => {
+  const result = verifyExpectedCell(tx, { outputIndex: 0, lock: { codeHash: lock.code_hash.toUpperCase().replace("0X", "0x"), args: "0x1234" } });
+  assert.equal(result.ok, true);
+});
+
+test("live Cell accepts direct data string payload", () => {
+  const result = verifyLiveCell({ status: "live", cell: { output: tx.outputs[0], data: "0xABCD" } }, { outputIndex: 0, mode: "live", data: "0xabcd" });
+  assert.equal(result.ok, true);
+});

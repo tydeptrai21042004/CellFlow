@@ -7,8 +7,7 @@ export async function GET(request: Request, context: { params: Promise<{ intentI
   try {
     const project = await projectFromRequest(request);
     const { intentId } = await context.params;
-    const aggregate = await service.getIntent(project, intentId);
-    const intent = await service.repository.executionPublicView(aggregate);
+    const intent = await service.intentDetail(project, intentId);
     return Response.json({ intent });
   } catch (error) {
     return errorResponse(error);

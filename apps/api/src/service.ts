@@ -105,6 +105,28 @@ export class CellFlowService {
     return Promise.all(rows.map((row) => this.repository.executionPublicView(row)));
   }
 
+  async intentDetail(project: ProjectRecord, intentId: string): Promise<Record<string, unknown>> {
+    const aggregate = await this.getIntent(project, intentId);
+    const [view, events] = await Promise.all([
+      this.repository.executionPublicView(aggregate),
+      this.repository.getEvents(project.id, aggregate.intent.id),
+    ]);
+    return {
+      ...view,
+      network: aggregate.execution.network,
+      metadata: aggregate.intent.metadata,
+      expectedCells: aggregate.intent.expectedCells,
+      events: events.map((event) => ({
+        sequence: event.sequence,
+        kind: event.kind,
+        fromStatus: event.fromStatus,
+        toStatus: event.toStatus,
+        reason: event.reason,
+        occurredAt: event.occurredAt,
+      })),
+    };
+  }
+
   async attachTransaction(
     project: ProjectRecord,
     intentId: string,

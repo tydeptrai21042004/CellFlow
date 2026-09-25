@@ -5,7 +5,11 @@ import {
   computeConfirmationCount,
   deriveOverallStatus,
   initialSnapshot,
+  isConfirmationSatisfied,
+  normalizeIntentId,
   normalizeTxHash,
+  parseHexBlockNumber,
+  setWorkflowStatus,
   updateSubmission,
 } from "../../.tmp/core/index.js";
 
@@ -165,4 +169,79 @@ test("rejected transaction becomes terminal chain rejection", () => {
   assert.equal(result.snapshot.chainStatus, "REJECTED");
   assert.equal(deriveOverallStatus(result.snapshot), "REJECTED");
   assert.equal(result.snapshot.rejectionReason, "invalid");
+});
+
+
+test("hex block parsing rejects malformed values", () => {
+  assert.equal(parseHexBlockNumber("0x10"), 16n);
+  assert.equal(parseHexBlockNumber("10"), undefined);
+  assert.equal(parseHexBlockNumber("0xzz"), undefined);
+  assert.equal(parseHexBlockNumber(undefined), undefined);
+});
+
+test("confirmation policy requires committed chain state and configured depth", () => {
+  assert.equal(isConfirmationSatisfied({ mode: "depth", blocks: 4 }, "COMMITTED", 3), false);
+  assert.equal(isConfirmationSatisfied({ mode: "depth", blocks: 4 }, "COMMITTED", 4), true);
+  assert.equal(isConfirmationSatisfied({ mode: "committed" }, "PROPOSED", 20), false);
+});
+
+test("intent identifiers are normalized and constrained", () => {
+  assert.equal(normalizeIntentId("  skillpass:transfer-1042  "), "skillpass:transfer-1042");
+  assert.throws(() => normalizeIntentId("bad intent with spaces"));
+  assert.throws(() => normalizeIntentId(""));
+  assert.throws(() => normalizeIntentId("a".repeat(129)));
+});
+
+test("proposed observation remains reconciling and derives PROPOSED", () => {
+  const snapshot = updateSubmission(initialSnapshot(), "SUBMITTED");
+  const result = applyChainObservation(snapshot, {
+    status: "PROPOSED", observedAt: "2026-09-25T00:00:00Z", raw: {},
+  });
+  assert.equal(result.snapshot.chainStatus, "PROPOSED");
+  assert.equal(result.snapshot.workflowStatus, "RECONCILING");
+  assert.equal(deriveOverallStatus(result.snapshot), "PROPOSED");
+});
+
+test("unknown observation before any commit remains recoverable", () => {
+  const snapshot = updateSubmission(initialSnapshot(), "SUBMITTED");
+  const result = applyChainObservation(snapshot, {
+    status: "UNKNOWN", observedAt: "2026-09-25T00:00:00Z", raw: null,
+  });
+  assert.equal(result.snapshot.workflowStatus, "RECONCILING");
+  assert.equal(deriveOverallStatus(result.snapshot), "RECONCILING");
+});
+
+test("manual CONFIRMED workflow state requires a committed transaction", () => {
+  assert.throws(() => setWorkflowStatus(initialSnapshot(), "CONFIRMED"), /requires COMMITTED/i);
+  const committed = applyChainObservation(
+    updateSubmission(initialSnapshot({ mode: "depth", blocks: 5 }), "SUBMITTED"),
+    { status: "COMMITTED", observedAt: "2026-09-25T00:00:00Z", raw: {}, blockHash: "0xaa", blockNumber: "0x10", tipBlockNumber: "0x10" },
+  ).snapshot;
+  assert.equal(setWorkflowStatus(committed, "CONFIRMED").workflowStatus, "CONFIRMED");
+});
+
+test("submission cannot change after authoritative rejection", () => {
+  const rejected = applyChainObservation(
+    updateSubmission(initialSnapshot(), "SUBMITTED"),
+    { status: "REJECTED", observedAt: "2026-09-25T00:00:00Z", raw: {}, rejectionReason: "bad tx" },
+  ).snapshot;
+  assert.throws(() => updateSubmission(rejected, "SUBMITTED"), /authoritative rejection/i);
+});
+
+test("CONFLICTED and EXPIRED dominate overall state", () => {
+  assert.equal(deriveOverallStatus({ ...initialSnapshot(), workflowStatus: "CONFLICTED", chainStatus: "REJECTED" }), "CONFLICTED");
+  assert.equal(deriveOverallStatus({ ...initialSnapshot(), workflowStatus: "EXPIRED", chainStatus: "COMMITTED" }), "EXPIRED");
+});
+
+test("committed observation without block depth does not falsely satisfy depth policy", () => {
+  const result = applyChainObservation(
+    updateSubmission(initialSnapshot({ mode: "depth", blocks: 2 }), "SUBMITTED"),
+    { status: "COMMITTED", observedAt: "2026-09-25T00:00:00Z", raw: {}, blockHash: "0xaa" },
+  );
+  assert.equal(result.snapshot.confirmationCount, 0);
+  assert.equal(result.snapshot.workflowStatus, "WAITING_CONFIRMATIONS");
+});
+
+test("confirmation count saturates safely for huge block distance", () => {
+  assert.equal(computeConfirmationCount("0x0", "0xffffffffffffffffffffffffffffffff"), Number.MAX_SAFE_INTEGER);
 });

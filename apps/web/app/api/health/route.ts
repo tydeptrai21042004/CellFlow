@@ -6,7 +6,7 @@ export const runtime = "nodejs";
 export async function GET() {
   try {
     const database = await repository.ping();
-    return Response.json({ ok: true, database, service: "cellflow", version: "0.1.0" });
+    return Response.json({ ok: true, database, service: "cellflow", version: "0.2.0" });
   } catch (error) {
     return errorResponse(error);
   }

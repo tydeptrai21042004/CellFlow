@@ -22,11 +22,13 @@ This repository now contains a runnable implementation rather than only the orig
 - expected-Cell assertions for output index/capacity/lock/type/data with `created` and current `live` modes;
 - atomic state/event/webhook outbox writes, leased webhook retries, encrypted per-endpoint secrets and DNS-pinned SSRF protection;
 - project/API-key bootstrap flow with separate bootstrap and encryption secrets plus DB-backed rate limiting;
-- operational dashboard;
+- production-style operations dashboard with service health, KPIs, search/filtering, intent audit drawer and optional auto-refresh;
 - persisted/deduplicated deterministic JSON evidence endpoint;
 - optimistic concurrency retry, reconciliation leases and deduplicated durable Workflow starts;
 - zero-dependency `cellflow` operator CLI;
-- lifecycle, reorg, assertion and hardening verification tests.
+- interactive local-only SkillPass lifecycle example with REST/CCC integration snippets;
+- API-key and signed-webhook management UI;
+- 47 deterministic lifecycle, reorg, assertion, hardening, UI-safety and deployment-contract tests.
 
 ## Architecture
 
@@ -143,7 +145,11 @@ npm run migrate
 npm run dev
 ```
 
-Open `http://localhost:3000`. The setup panel accepts `CELLFLOW_BOOTSTRAP_TOKEN`; the server-only encryption key never enters the browser. The generated `cf_live_...` API key is shown once and kept only in page memory. Set `CELLFLOW_SETUP_ENABLED=false` after production provisioning.
+Open `http://localhost:3000`. The collapsible first-deploy setup section accepts `CELLFLOW_BOOTSTRAP_TOKEN`; the server-only encryption key never enters the browser. The generated `cf_live_...` API key is shown once and kept only in page memory. Set `CELLFLOW_SETUP_ENABLED=false` after production provisioning.
+
+## Operations UI
+
+The hosted dashboard is designed around production operations rather than a demo table. It exposes database/RPC health, project KPIs, search and status filtering, optional auto-refresh, intent-level confirmation and assertion state, an audit timeline, API-key/webhook management, and a local-only SkillPass walkthrough showing the ambiguous-submit recovery model. See `UI_PRODUCTION_UPGRADE.md` for the UI and test coverage.
 
 ## API example
 

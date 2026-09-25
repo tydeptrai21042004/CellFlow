@@ -15,6 +15,10 @@ const required = [
   "apps/web/workflows/reconcile-intent.ts",
   "apps/web/app/api/v1/intents/route.ts",
   "apps/web/app/page.tsx",
+  "apps/web/components/IntentDrawer.tsx",
+  "apps/web/components/ExampleUse.tsx",
+  "apps/web/components/IntegrationsPanel.tsx",
+  "tests/runtime/ui.test.mjs",
 ];
 
 test("runnable implementation files are present", async () => {
