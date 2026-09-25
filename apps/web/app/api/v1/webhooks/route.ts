@@ -1,5 +1,5 @@
 import { errorResponse, webhookSchema } from "@cellflow/api";
-import { projectFromRequest, readJson, service } from "../../../../lib/server";
+import { projectFromRequest, readJson, service } from "../../../../lib/server.ts";
 
 export const runtime = "nodejs";
 

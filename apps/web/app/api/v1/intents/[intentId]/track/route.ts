@@ -1,6 +1,6 @@
 import { errorResponse, txHashSchema } from "@cellflow/api";
-import { projectFromRequest, readJson, service } from "../../../../../../lib/server";
-import { startReconciliationWorkflow } from "../../../../../../lib/workflow";
+import { projectFromRequest, readJson, service } from "../../../../../../lib/server.ts";
+import { startReconciliationWorkflow } from "../../../../../../lib/workflow.ts";
 
 export const runtime = "nodejs";
 

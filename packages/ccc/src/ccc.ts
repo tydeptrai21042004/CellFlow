@@ -1,5 +1,5 @@
 import { ccc } from "@ckb-ccc/core";
-import { CellFlowClient } from "./client.js";
+import { CellFlowClient } from "./client.ts";
 
 export class AmbiguousSubmissionError extends Error {
   constructor(

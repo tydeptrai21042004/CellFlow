@@ -1,2 +1,2 @@
-export * from "./rpc.js";
-export * from "./reconcile.js";
+export * from "./rpc.ts";
+export * from "./reconcile.ts";

@@ -17,7 +17,7 @@ import {
 } from "@cellflow/db";
 import { reconcileIntent } from "@cellflow/reconcile";
 import { encryptSecret, validateWebhookUrl } from "@cellflow/webhooks";
-import { generateApiKey } from "./auth.js";
+import { generateApiKey } from "./auth.ts";
 
 function stable(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;

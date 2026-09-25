@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { start } from "workflow/api";
 import { CellFlowRepository } from "@cellflow/db";
-import { transactionReconciliationWorkflow } from "../workflows/reconcile-intent";
+import { transactionReconciliationWorkflow } from "../workflows/reconcile-intent.ts";
 
 export async function startReconciliationWorkflow(projectId: string, intentId: string): Promise<string> {
   const repository = new CellFlowRepository();

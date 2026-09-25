@@ -1,5 +1,5 @@
-import { CellFlowError } from "./errors.js";
-import type { ConfirmationPolicy } from "./types.js";
+import { CellFlowError } from "./errors.ts";
+import type { ConfirmationPolicy } from "./types.ts";
 
 export function parseConfirmationPolicy(value?: string): ConfirmationPolicy {
   if (!value || value === "committed") return { mode: "committed" };

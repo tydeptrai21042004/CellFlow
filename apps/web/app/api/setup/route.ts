@@ -1,5 +1,5 @@
 import { errorResponse, requireBootstrapToken, setupSchema } from "@cellflow/api";
-import { readJson, service } from "../../../lib/server";
+import { readJson, service } from "../../../lib/server.ts";
 
 export const runtime = "nodejs";
 

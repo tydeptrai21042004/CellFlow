@@ -1,5 +1,5 @@
 import { errorResponse } from "@cellflow/api";
-import { projectFromRequest, service } from "../../../../../../lib/server";
+import { projectFromRequest, service } from "../../../../../../lib/server.ts";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;

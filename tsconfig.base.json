@@ -43,6 +43,8 @@
       "@cellflow/ccc": [
         "packages/ccc/src/index.ts"
       ]
-    }
+    },
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true
   }
 }

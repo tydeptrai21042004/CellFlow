@@ -17,7 +17,7 @@ import {
   snapshotFromExecution,
   type IntentAggregate,
 } from "@cellflow/db";
-import { CkbRpcClient, observeTransaction } from "./rpc.js";
+import { CkbRpcClient, observeTransaction } from "./rpc.ts";
 
 export function nextReconcileDelayMs(attempt: number, chainStatus: string): number {
   if (["PENDING", "PROPOSED", "COMMITTED"].includes(chainStatus)) return 12_000;

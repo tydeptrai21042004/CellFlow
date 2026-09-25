@@ -1,5 +1,5 @@
 import { errorResponse } from "@cellflow/api";
-import { repository } from "../../../lib/server";
+import { repository } from "../../../lib/server.ts";
 
 export const runtime = "nodejs";
 

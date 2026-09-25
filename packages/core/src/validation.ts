@@ -1,4 +1,4 @@
-import { CellFlowError } from "./errors.js";
+import { CellFlowError } from "./errors.ts";
 
 export function normalizeTxHash(value: string): string {
   const normalized = value.toLowerCase();

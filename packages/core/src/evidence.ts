@@ -1,5 +1,5 @@
-import type { EvidenceDocument, EvidenceStateEvent, ExecutionSnapshot } from "./types.js";
-import { deriveOverallStatus } from "./state-machine.js";
+import type { EvidenceDocument, EvidenceStateEvent, ExecutionSnapshot } from "./types.ts";
+import { deriveOverallStatus } from "./state-machine.ts";
 
 export interface EvidenceInput {
   projectId: string;

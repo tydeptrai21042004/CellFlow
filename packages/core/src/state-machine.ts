@@ -1,4 +1,4 @@
-import { CellFlowError } from "./errors.js";
+import { CellFlowError } from "./errors.ts";
 import type {
   ApplyObservationResult,
   ChainObservation,
@@ -7,7 +7,7 @@ import type {
   OverallStatus,
   SubmissionStatus,
   WorkflowStatus,
-} from "./types.js";
+} from "./types.ts";
 
 export function parseHexBlockNumber(value: string | undefined): bigint | undefined {
   if (!value) return undefined;

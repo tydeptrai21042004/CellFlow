@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { errorResponse } from "@cellflow/api";
 import { deliverDueWebhooks } from "@cellflow/webhook-delivery";
-import { projectFromRequest, repository } from "../../../../../lib/server";
+import { projectFromRequest, repository } from "../../../../../lib/server.ts";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;

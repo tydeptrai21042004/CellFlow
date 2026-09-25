@@ -1,8 +1,8 @@
 import http from "node:http";
 import https from "node:https";
 import { CellFlowRepository, type WebhookDeliveryRecord } from "@cellflow/db";
-import { decryptSecret, signWebhook } from "./crypto.js";
-import { validateWebhookDestination } from "./ssrf.js";
+import { decryptSecret, signWebhook } from "./crypto.ts";
+import { validateWebhookDestination } from "./ssrf.ts";
 
 export function webhookBackoffMs(attempt: number): number {
   const base = Math.min(60 * 60 * 1000, 5_000 * 2 ** Math.min(attempt, 8));

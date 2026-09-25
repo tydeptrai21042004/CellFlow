@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Sql } from "postgres";
 import { deriveOverallStatus, type ConfirmationPolicy, type ExecutionSnapshot } from "@cellflow/core";
-import { getSql } from "./client.js";
+import { getSql } from "./client.ts";
 import type {
   EvidenceExportRecord,
   ExecutionRecord,
@@ -11,7 +11,7 @@ import type {
   StateEventRecord,
   WebhookDeliveryRecord,
   WebhookEndpointRecord,
-} from "./types.js";
+} from "./types.ts";
 
 function iso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
