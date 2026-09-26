@@ -1,4 +1,4 @@
-import { CellFlowError, type ChainObservation } from "@cellflow/core";
+import { CellFlowError, type ChainObservation, type OutPointRef } from "@cellflow/core";
 
 export interface RpcTransactionStatus {
   status: "pending" | "proposed" | "committed" | "unknown" | "rejected";
@@ -42,6 +42,40 @@ interface JsonRpcEnvelope<T> {
 export interface RpcIdentityExpectation {
   chain?: string | null;
   genesisHash?: string | null;
+}
+
+export type CanonicalInputState = "LIVE" | "SPENT" | "UNKNOWN";
+export type PoolInputState = "AVAILABLE" | "UNAVAILABLE" | "UNKNOWN";
+export type InputInspectionState =
+  | "ALL_LIVE"
+  | "MEMPOOL_CONTENDED"
+  | "CANONICALLY_SPENT"
+  | "UNKNOWN";
+
+export interface InputObservation {
+  outPoint: OutPointRef;
+  canonical: CanonicalInputState;
+  poolAware: PoolInputState;
+  canonicalRpcStatus: string | null;
+  poolRpcStatus: string | null;
+  creatorTxStatus: string | null;
+  creatorBlockHash: string | null;
+  creatorBlockNumber: string | null;
+}
+
+export interface InputInspection {
+  state: InputInspectionState;
+  inputs: InputObservation[];
+  endpoint: string;
+  observedAt: string;
+  tipBlockNumber: string | null;
+}
+
+export interface RpcObservationBundle {
+  observation: ChainObservation;
+  rpcResult: RpcTransactionResult | null;
+  endpoint: string;
+  inputInspection?: InputInspection;
 }
 
 function normalizeHash(value: string | null | undefined): string | null {
@@ -217,15 +251,22 @@ export class CkbRpcClient {
     return this.call<RpcLiveCellResult | null>("get_live_cell", params);
   }
 
+  async inspectInputOutPoints(
+    inputOutPoints: OutPointRef[],
+    expectedIdentity: RpcIdentityExpectation = {},
+  ): Promise<InputInspection> {
+    return this.withSession(async (session) => {
+      await session.assertIdentity(expectedIdentity);
+      return inspectInputOutPointsOnSession(session, inputOutPoints);
+    });
+  }
+
   async observe(
     txHash: string,
     prior?: { blockHash: string; blockNumber: string },
     expectedIdentity: RpcIdentityExpectation = {},
-  ): Promise<{
-    observation: ChainObservation;
-    rpcResult: RpcTransactionResult | null;
-    endpoint: string;
-  }> {
+    inputOutPoints: OutPointRef[] = [],
+  ): Promise<RpcObservationBundle> {
     return this.withSession(async (session) => {
       // Validate the exact endpoint selected by failover before trusting chain
       // observations from it. This prevents a misconfigured fallback from
@@ -240,15 +281,23 @@ export class CkbRpcClient {
       }
 
       if (!result || !result.tx_status) {
+        const inputInspection = inputOutPoints.length > 0
+          ? await inspectInputOutPointsOnSession(session, inputOutPoints)
+          : undefined;
         return {
           observation: {
             status: "UNKNOWN", observedAt,
-            raw: { txStatus: null, priorCommitCanonical },
+            raw: {
+              txStatus: null,
+              priorCommitCanonical,
+              ...(inputInspection ? { inputInspection } : {}),
+            },
             rpcEndpoint: session.url,
             ...(priorCommitCanonical === undefined ? {} : { priorCommitCanonical }),
           },
           rpcResult: result,
           endpoint: session.url,
+          ...(inputInspection ? { inputInspection } : {}),
         };
       }
 
@@ -313,7 +362,24 @@ export class CkbRpcClient {
           endpoint: session.url,
         };
       }
-      return { observation: { ...base, status: "UNKNOWN" as const }, rpcResult: result, endpoint: session.url };
+      const inputInspection = inputOutPoints.length > 0
+        ? await inspectInputOutPointsOnSession(session, inputOutPoints)
+        : undefined;
+      return {
+        observation: {
+          ...base,
+          status: "UNKNOWN" as const,
+          raw: {
+            txStatus: status,
+            reason: result.tx_status.reason ?? null,
+            priorCommitCanonical,
+            ...(inputInspection ? { inputInspection } : {}),
+          },
+        },
+        rpcResult: result,
+        endpoint: session.url,
+        ...(inputInspection ? { inputInspection } : {}),
+      };
     });
   }
 }
@@ -328,11 +394,115 @@ function headerNumber(header: Record<string, unknown> | null): string | undefine
   return undefined;
 }
 
+function liveCellParams(outPoint: OutPointRef, includeTxPool: boolean): unknown[] {
+  return [
+    { tx_hash: outPoint.txHash, index: `0x${outPoint.index.toString(16)}` },
+    false,
+    includeTxPool,
+  ];
+}
+
+async function creatorCanonicalEvidence(
+  session: RpcEndpointSession,
+  outPoint: OutPointRef,
+): Promise<{
+  canonical: boolean;
+  txStatus: string | null;
+  blockHash: string | null;
+  blockNumber: string | null;
+}> {
+  const creator = await session.call<RpcTransactionResult | null>("get_transaction", [outPoint.txHash]);
+  const txStatus = creator?.tx_status?.status ?? null;
+  const blockHash = normalizeHash(creator?.tx_status?.block_hash);
+  if (txStatus !== "committed" || !creator?.transaction || !blockHash) {
+    return { canonical: false, txStatus, blockHash, blockNumber: null };
+  }
+  if (outPoint.index >= creator.transaction.outputs.length) {
+    return { canonical: false, txStatus, blockHash, blockNumber: null };
+  }
+  const header = await session.call<Record<string, unknown> | null>("get_header", [blockHash]);
+  const blockNumber = headerNumber(header) ?? null;
+  if (!blockNumber) return { canonical: false, txStatus, blockHash, blockNumber: null };
+  const canonicalHash = normalizeHash(await session.call<string | null>("get_block_hash", [blockNumber]));
+  return {
+    canonical: canonicalHash === blockHash,
+    txStatus,
+    blockHash,
+    blockNumber,
+  };
+}
+
+async function inspectInputOutPointsOnSession(
+  session: RpcEndpointSession,
+  inputOutPoints: OutPointRef[],
+): Promise<InputInspection> {
+  const observedAt = new Date().toISOString();
+  const inputs: InputObservation[] = [];
+
+  for (const outPoint of inputOutPoints) {
+    const canonicalResult = await session.call<RpcLiveCellResult | null>(
+      "get_live_cell",
+      liveCellParams(outPoint, false),
+    );
+    const canonicalRpcStatus = canonicalResult?.status?.toLowerCase() ?? null;
+
+    let canonical: CanonicalInputState = "UNKNOWN";
+    let poolAware: PoolInputState = "UNKNOWN";
+    let poolRpcStatus: string | null = null;
+    let creatorTxStatus: string | null = null;
+    let creatorBlockHash: string | null = null;
+    let creatorBlockNumber: string | null = null;
+
+    if (canonicalRpcStatus === "live") {
+      canonical = "LIVE";
+      const poolResult = await session.call<RpcLiveCellResult | null>(
+        "get_live_cell",
+        liveCellParams(outPoint, true),
+      );
+      poolRpcStatus = poolResult?.status?.toLowerCase() ?? null;
+      poolAware = poolRpcStatus === "live" ? "AVAILABLE" : "UNAVAILABLE";
+    } else {
+      // Modern CKB may report a spent Cell as `unknown`; `dead` is deprecated.
+      // Prove spend conservatively: the creator transaction/output must still be
+      // canonically committed, while the output itself is no longer live.
+      const creator = await creatorCanonicalEvidence(session, outPoint);
+      creatorTxStatus = creator.txStatus;
+      creatorBlockHash = creator.blockHash;
+      creatorBlockNumber = creator.blockNumber;
+      canonical = creator.canonical ? "SPENT" : "UNKNOWN";
+    }
+
+    inputs.push({
+      outPoint,
+      canonical,
+      poolAware,
+      canonicalRpcStatus,
+      poolRpcStatus,
+      creatorTxStatus,
+      creatorBlockHash,
+      creatorBlockNumber,
+    });
+  }
+
+  const tip = await session.call<Record<string, unknown>>("get_tip_header", []);
+  const tipBlockNumber = headerNumber(tip) ?? null;
+  const state: InputInspectionState = inputs.some((item) => item.canonical === "SPENT")
+    ? "CANONICALLY_SPENT"
+    : inputs.some((item) => item.canonical === "UNKNOWN")
+      ? "UNKNOWN"
+      : inputs.some((item) => item.poolAware === "UNAVAILABLE")
+        ? "MEMPOOL_CONTENDED"
+        : "ALL_LIVE";
+
+  return { state, inputs, endpoint: session.url, observedAt, tipBlockNumber };
+}
+
 export async function observeTransaction(
   client: CkbRpcClient,
   txHash: string,
   prior?: { blockHash: string; blockNumber: string },
   expectedIdentity: RpcIdentityExpectation = {},
-): Promise<{ observation: ChainObservation; rpcResult: RpcTransactionResult | null; endpoint: string }> {
-  return client.observe(txHash, prior, expectedIdentity);
+  inputOutPoints: OutPointRef[] = [],
+): Promise<RpcObservationBundle> {
+  return client.observe(txHash, prior, expectedIdentity, inputOutPoints);
 }

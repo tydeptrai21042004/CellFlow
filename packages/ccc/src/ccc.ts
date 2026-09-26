@@ -111,7 +111,11 @@ export async function prepareTrackedTransaction(
     txHash,
     inputOutPoints,
     async broadcast(): Promise<ccc.Hex> {
-      // A persistence failure before this point is not an ambiguous broadcast.
+      // Fail closed before broadcast if any persisted input is stale, already
+      // consumed, or currently unavailable under tx-pool-aware inspection.
+      await options.flow.preflight(options.intentId);
+
+      // A persistence/preflight failure before this point is not an ambiguous broadcast.
       await options.flow.markBroadcasting(options.intentId);
 
       let returnedHash: ccc.Hex;

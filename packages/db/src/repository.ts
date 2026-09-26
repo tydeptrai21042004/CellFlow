@@ -467,14 +467,14 @@ export class CellFlowRepository {
           where project_id = ${projectId}
             and workflow_status not in ('CONFIRMED','CONFLICTED','EXPIRED')
             and chain_status <> 'REJECTED'
-            and submission_status <> 'NODE_REJECTED'
+            and (submission_status <> 'NODE_REJECTED' or conflict_type = 'INPUT_CONFLICT_SUSPECTED')
             and tx_hash is not null
             and (last_observed_at is null or last_observed_at < now() - (${stale} * interval '1 minute'))) as stale_active_intents,
         (select extract(epoch from (now() - min(created_at)))::bigint from executions
           where project_id = ${projectId}
             and workflow_status not in ('CONFIRMED','CONFLICTED','EXPIRED')
             and chain_status <> 'REJECTED'
-            and submission_status <> 'NODE_REJECTED') as oldest_active_age_seconds,
+            and (submission_status <> 'NODE_REJECTED' or conflict_type = 'INPUT_CONFLICT_SUSPECTED')) as oldest_active_age_seconds,
         (select count(*)::int from webhook_deliveries where project_id = ${projectId} and status in ('PENDING','RETRY','CLAIMED')) as pending_webhooks,
         (select count(*)::int from webhook_deliveries where project_id = ${projectId} and status = 'FAILED') as failed_webhooks,
         (select count(*)::int from api_keys where project_id = ${projectId} and revoked_at is null and (expires_at is null or expires_at > now())) as active_api_keys,
@@ -631,9 +631,7 @@ export class CellFlowRepository {
             conflict_details = ${input.conflictDetails === undefined
               ? input.aggregate.execution.conflictDetails === null ? null : tx.json(toJsonValue(input.aggregate.execution.conflictDetails))
               : tx.json(toJsonValue(input.conflictDetails))},
-            next_reconcile_at = ${input.status === "NODE_REJECTED"
-              ? null
-              : input.scheduleReconcile ? new Date() : input.aggregate.execution.nextReconcileAt},
+            next_reconcile_at = ${input.scheduleReconcile ? new Date() : input.aggregate.execution.nextReconcileAt},
             version = version + 1, updated_at = now()
         where id = ${input.aggregate.execution.id}
           and project_id = ${input.aggregate.intent.projectId}
@@ -691,9 +689,13 @@ export class CellFlowRepository {
     nextReconcileAt: Date | null;
     assertionStatus?: string | null;
     assertionResult?: unknown;
+    conflictType?: ConflictType | null;
+    conflictDetails?: unknown;
   }): Promise<string | null> {
     const prior = input.aggregate.execution;
     const nextAssertionStatus = input.assertionStatus ?? prior.assertionStatus;
+    const nextConflictType = input.conflictType === undefined ? prior.conflictType : input.conflictType;
+    const nextConflictDetails = input.conflictDetails === undefined ? prior.conflictDetails : input.conflictDetails;
     const meaningful =
       prior.submissionStatus !== input.snapshot.submissionStatus ||
       prior.chainStatus !== input.snapshot.chainStatus ||
@@ -701,7 +703,9 @@ export class CellFlowRepository {
       prior.committedBlockHash !== (input.snapshot.committedBlockHash ?? null) ||
       prior.committedBlockNumber !== (input.snapshot.committedBlockNumber ?? null) ||
       prior.rejectionReason !== (input.snapshot.rejectionReason ?? null) ||
-      prior.assertionStatus !== nextAssertionStatus;
+      prior.assertionStatus !== nextAssertionStatus ||
+      prior.conflictType !== nextConflictType ||
+      JSON.stringify(toJsonValue(prior.conflictDetails)) !== JSON.stringify(toJsonValue(nextConflictDetails));
 
     return this.sql.begin(async (tx) => {
       const updated = await tx`
@@ -714,6 +718,10 @@ export class CellFlowRepository {
           committed_block_number = ${input.snapshot.committedBlockNumber ?? null},
           rejection_reason = ${input.snapshot.rejectionReason ?? null},
           assertion_status = ${nextAssertionStatus},
+          conflict_type = ${nextConflictType},
+          conflict_details = ${nextConflictDetails === null
+            ? null
+            : tx.json(toJsonValue(nextConflictDetails))},
           assertion_result = ${input.assertionResult === undefined
             ? (prior.assertionResult === null ? null : tx.json(toJsonValue(prior.assertionResult)))
             : tx.json(toJsonValue(input.assertionResult))},
@@ -824,7 +832,7 @@ export class CellFlowRepository {
         where e.next_reconcile_at is not null and e.next_reconcile_at <= now()
           and e.workflow_status not in ('CONFLICTED', 'EXPIRED')
           and e.chain_status <> 'REJECTED'
-          and e.submission_status <> 'NODE_REJECTED'
+          and (e.submission_status <> 'NODE_REJECTED' or e.conflict_type = 'INPUT_CONFLICT_SUSPECTED')
           and (e.reconcile_lease_until is null or e.reconcile_lease_until < now())
         order by e.next_reconcile_at asc
         for update of e skip locked

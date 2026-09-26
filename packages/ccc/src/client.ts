@@ -116,6 +116,14 @@ export class CellFlowClient {
     return result.intent;
   }
 
+  async preflight(intentId: string): Promise<IntentView> {
+    const result = await this.request<{ intent: IntentView }>(
+      `/api/v1/intents/${encodeURIComponent(intentId)}/preflight`,
+      { method: "POST", body: "{}" },
+    );
+    return result.intent;
+  }
+
   async markBroadcasting(intentId: string): Promise<IntentView> {
     const result = await this.request<{ intent: IntentView }>(
       `/api/v1/intents/${encodeURIComponent(intentId)}/broadcasting`,

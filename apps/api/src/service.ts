@@ -20,7 +20,7 @@ import {
   type OperationalHealthRecord,
   type ProjectRecord,
 } from "@cellflow/db";
-import { CkbRpcClient, reconcileIntent } from "@cellflow/reconcile";
+import { CkbRpcClient, parseRpcUrls, reconcileIntent, type InputInspection } from "@cellflow/reconcile";
 import { encryptSecret, validateWebhookUrl } from "@cellflow/webhooks";
 import { generateApiKey } from "./auth.ts";
 
@@ -41,6 +41,21 @@ function encryptionKey(): string {
     throw new CellFlowError("INTERNAL_ERROR", "CELLFLOW_ENCRYPTION_KEY is not configured", 500);
   }
   return key;
+}
+
+function projectRpcEndpoints(project: ProjectRecord): string[] {
+  return parseRpcUrls(
+    project.rpcUrl,
+    process.env.CKB_RPC_URL,
+    process.env.CKB_RPC_FALLBACK_URL,
+    process.env.CKB_RPC_FALLBACK_URLS,
+  );
+}
+
+function expectedChainForNetwork(network: ProjectRecord["network"]): string | null {
+  if (network === "mainnet") return "ckb";
+  if (network === "testnet") return "ckb_testnet";
+  return null;
 }
 
 export class CellFlowService {
@@ -304,6 +319,75 @@ export class CellFlowService {
     throw new CellFlowError("INTERNAL_ERROR", "Concurrent attach retry exhausted", 503);
   }
 
+  async preflight(project: ProjectRecord, intentId: string): Promise<Record<string, unknown>> {
+    const aggregate = await this.getIntent(project, intentId);
+    if (!aggregate.execution.txHash) {
+      throw new CellFlowError("INVALID_TX_HASH", "Intent has no prepared transaction hash", 400);
+    }
+    if (aggregate.execution.inputOutPoints.length === 0) {
+      throw new CellFlowError(
+        "INVALID_SIGNED_TRANSACTION",
+        "Input preflight requires the prepared transaction input OutPoints",
+        409,
+      );
+    }
+
+    const urls = projectRpcEndpoints(project);
+    if (urls.length === 0) {
+      throw new CellFlowError("RPC_UNAVAILABLE", "No CKB RPC endpoint configured", 503);
+    }
+    const client = new CkbRpcClient(urls);
+    const status = deriveOverallStatus(snapshotFromExecution(aggregate.execution));
+
+    let inspection: InputInspection;
+    try {
+      inspection = await client.inspectInputOutPoints(aggregate.execution.inputOutPoints, {
+        chain: expectedChainForNetwork(project.network),
+        genesisHash: project.rpcGenesisHash ?? process.env.CKB_EXPECTED_GENESIS_HASH ?? null,
+      });
+    } catch (error) {
+      await this.repository.appendEvent({
+        aggregate,
+        kind: "INPUT_PREFLIGHT_FAILED",
+        fromStatus: status,
+        toStatus: status,
+        reason: "Direct CKB RPC input preflight could not obtain trustworthy evidence",
+        rawObservation: {
+          state: "RPC_UNCERTAIN",
+          error: error instanceof Error ? error.message : "Input preflight RPC failed",
+        },
+      });
+      throw error;
+    }
+
+    if (inspection.state !== "ALL_LIVE") {
+      await this.repository.appendEvent({
+        aggregate,
+        kind: "INPUT_PREFLIGHT_FAILED",
+        fromStatus: status,
+        toStatus: status,
+        reason: `Input preflight blocked broadcast: ${inspection.state}`,
+        rawObservation: inspection,
+      });
+      throw new CellFlowError(
+        "INVALID_SIGNED_TRANSACTION",
+        `Input preflight blocked broadcast: ${inspection.state}`,
+        409,
+        { inspectionState: inspection.state },
+      );
+    }
+
+    await this.repository.appendEvent({
+      aggregate,
+      kind: "INPUT_PREFLIGHT_VERIFIED",
+      fromStatus: status,
+      toStatus: status,
+      reason: "All original input OutPoints are canonically live and available against tx-pool state",
+      rawObservation: inspection,
+    });
+    return this.repository.executionPublicView(aggregate);
+  }
+
   async markSubmission(
     project: ProjectRecord,
     intentId: string,
@@ -363,7 +447,10 @@ export class CellFlowService {
         const updated = await this.repository.markSubmissionStatus({
           aggregate: current,
           status,
-          scheduleReconcile: status === "SUBMITTED" || status === "SUBMISSION_UNKNOWN",
+          scheduleReconcile:
+            status === "SUBMITTED" ||
+            status === "SUBMISSION_UNKNOWN" ||
+            (status === "NODE_REJECTED" && failure?.conflictType === "INPUT_CONFLICT_SUSPECTED"),
           fromStatus: deriveOverallStatus(before),
           toStatus: deriveOverallStatus(after),
           reason,
