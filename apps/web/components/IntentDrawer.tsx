@@ -21,6 +21,7 @@ export interface IntentDetail {
   submissionStatus: string;
   chainStatus: string;
   workflowStatus: string;
+  recommendedAction?: string;
   confirmationCount: number;
   confirmationPolicy?: { mode: string; blocks?: number };
   committedBlockHash?: string | null;
@@ -91,6 +92,7 @@ export default function IntentDrawer({ detail, busy, onClose, onReconcile, onEvi
           <div className="progress-track"><span style={{ width: `${percent}%` }} /></div>
           <dl className="detail-list">
             <div><dt>Assertion</dt><dd><StatusBadge value={detail.assertionStatus ?? "NOT_CONFIGURED"} compact /></dd></div>
+            <div><dt>Recommended action</dt><dd>{detail.recommendedAction?.replaceAll("_", " ") ?? "NONE"}</dd></div>
             <div><dt>Committed block</dt><dd className="mono-line">{shortHash(detail.committedBlockHash)}</dd></div>
             <div><dt>Block number</dt><dd>{detail.committedBlockNumber ?? "—"}</dd></div>
             <div><dt>Last update</dt><dd>{formatRelativeTime(detail.updatedAt)}</dd></div>

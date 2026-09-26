@@ -6,7 +6,7 @@ import type {
   OutPointRef,
   SubmissionErrorType,
 } from "./types.ts";
-import { deriveOverallStatus } from "./state-machine.ts";
+import { deriveOverallStatus, deriveRecommendedAction } from "./state-machine.ts";
 
 export interface EvidenceInput {
   projectId: string;
@@ -49,6 +49,7 @@ export function buildEvidence(input: EvidenceInput): EvidenceDocument {
     submissionErrorDetails: input.submissionErrorDetails,
     conflictType: input.conflictType,
     conflictDetails: input.conflictDetails,
+    recommendedAction: deriveRecommendedAction(input.snapshot, input.conflictType, input.assertionStatus),
     createdAt: input.createdAt,
     updatedAt: input.updatedAt,
     events: sortedEvents,

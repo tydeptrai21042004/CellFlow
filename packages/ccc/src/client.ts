@@ -36,6 +36,7 @@ export interface IntentView {
   submissionErrorDetails: unknown;
   conflictType: ConflictType | null;
   conflictDetails: unknown;
+  recommendedAction: string;
   [key: string]: unknown;
 }
 

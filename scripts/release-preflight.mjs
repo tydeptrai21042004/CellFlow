@@ -44,6 +44,8 @@ for (const path of manifests) {
 }
 add("pinned-direct-dependencies", floating.length === 0, "blocker", floating.length ? floating.join(", ") : "direct third-party versions are pinned");
 
+add("file:.github/workflows/ci.yml", await exists(".github/workflows/ci.yml"), "blocker", ".github/workflows/ci.yml");
+
 const envExampleExists = await exists(".env.example");
 add("file:.env.example", envExampleExists, "blocker", envExampleExists ? ".env.example present" : ".env.example missing");
 if (envExampleExists) {
@@ -52,6 +54,7 @@ if (envExampleExists) {
     "DATABASE_URL", "CKB_NETWORK", "CKB_RPC_URL", "CKB_EXPECTED_GENESIS_HASH",
     "CELLFLOW_ENCRYPTION_KEY", "CELLFLOW_BOOTSTRAP_TOKEN", "CELLFLOW_SETUP_ENABLED", "CRON_SECRET",
     "CELLFLOW_RECONCILE_CONCURRENCY", "CELLFLOW_WEBHOOK_CONCURRENCY", "CELLFLOW_WEBHOOK_MAX_ATTEMPTS",
+    "CKB_RPC_CIRCUIT_FAILURES", "CKB_RPC_CIRCUIT_COOLDOWN_MS", "CKB_ALLOW_INSECURE_RPC",
   ]) add(`env-template:${key}`, envExample.includes(`${key}=`), "blocker", `${key} documented`);
 }
 

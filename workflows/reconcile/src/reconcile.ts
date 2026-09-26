@@ -2,8 +2,11 @@ import { randomUUID } from "node:crypto";
 import {
   applyChainObservation,
   deriveOverallStatus,
-  parseHexBlockNumber,
   setWorkflowStatus,
+  supersedeNodeRejectionFromChainEvidence,
+  breakSpendObservationContinuity,
+  conflictObservationMatured,
+  nextSpentObservationDetails,
   type ConflictType,
   type ExecutionSnapshot,
 } from "@cellflow/core";
@@ -63,26 +66,49 @@ function isTerminal(snapshot: ExecutionSnapshot, assertionStatus: string | null,
   return expectedCount === 0 || assertionStatus === "VERIFIED";
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
-}
+async function corroborateCanonicalSpend(input: {
+  client: CkbRpcClient;
+  primary: InputInspection;
+  configuredEndpoints: string[];
+  inputOutPoints: IntentAggregate["execution"]["inputOutPoints"];
+  identity: { chain: string | null; genesisHash: string | null };
+}): Promise<{
+  confirmed: boolean;
+  requiredEndpoints: number;
+  observations: Array<{ endpoint: string; state: string; observedAt?: string; error?: string }>;
+}> {
+  const unique = [...new Set(input.configuredEndpoints)];
+  const requiredEndpoints = unique.length >= 2 ? 2 : 1;
+  const observations: Array<{ endpoint: string; state: string; observedAt?: string; error?: string }> = [{
+    endpoint: input.primary.endpoint,
+    state: input.primary.state,
+    observedAt: input.primary.observedAt,
+  }];
+  if (requiredEndpoints === 1) {
+    return { confirmed: input.primary.state === "CANONICALLY_SPENT", requiredEndpoints, observations };
+  }
 
-function conflictObservationMatured(aggregate: IntentAggregate, inspection: InputInspection): boolean {
-  const prior = asRecord(aggregate.execution.conflictDetails);
-  if (prior.classification !== "INPUT_SPENT_OBSERVED") return false;
-  const firstTip = typeof prior.firstObservedTipBlockNumber === "string"
-    ? parseHexBlockNumber(prior.firstObservedTipBlockNumber)
-    : undefined;
-  const currentTip = inspection.tipBlockNumber
-    ? parseHexBlockNumber(inspection.tipBlockNumber)
-    : undefined;
-  if (firstTip === undefined || currentTip === undefined) return false;
-  const requiredBlocks = aggregate.execution.confirmationPolicy.mode === "depth"
-    ? BigInt(Math.max(aggregate.execution.confirmationPolicy.blocks, 1))
-    : 1n;
-  return currentTip >= firstTip + requiredBlocks;
+  for (const endpoint of unique) {
+    if (endpoint === input.primary.endpoint) continue;
+    try {
+      const secondary = await input.client.inspectInputOutPointsAt(
+        endpoint,
+        input.inputOutPoints,
+        input.identity,
+      );
+      observations.push({ endpoint, state: secondary.state, observedAt: secondary.observedAt });
+      if (secondary.state === "CANONICALLY_SPENT") {
+        return { confirmed: true, requiredEndpoints, observations };
+      }
+    } catch (error) {
+      observations.push({
+        endpoint,
+        state: "RPC_UNAVAILABLE",
+        error: error instanceof Error ? error.message : "Corroboration failed",
+      });
+    }
+  }
+  return { confirmed: false, requiredEndpoints, observations };
 }
 
 async function evaluateAssertions(input: {
@@ -173,6 +199,11 @@ async function reconcileIntentOnce(
     };
     const applied = applyChainObservation(prior, failureObservation);
     const nextDelayMs = nextReconcileDelayMs(aggregate.execution.reconcileAttempts, "UNKNOWN");
+    const brokenConflictDetails = breakSpendObservationContinuity(
+      aggregate.execution.conflictDetails,
+      observedAt,
+      "RPC observation failed before canonical spend evidence could be rechecked",
+    );
     const eventId = await repository.applySnapshot({
       aggregate,
       snapshot: applied.snapshot,
@@ -185,6 +216,9 @@ async function reconcileIntentOnce(
         occurredAt: observedAt,
       },
       nextReconcileAt: new Date(Date.now() + nextDelayMs),
+      ...(brokenConflictDetails !== aggregate.execution.conflictDetails
+        ? { conflictDetails: brokenConflictDetails }
+        : {}),
     });
     return {
       intentId: aggregate.intent.intentId,
@@ -200,6 +234,12 @@ async function reconcileIntentOnce(
   const { observation, rpcResult, endpoint, inputInspection } = observed;
   const applied = applyChainObservation(prior, observation);
   let nextSnapshot: ExecutionSnapshot = applied.snapshot;
+  const rejectionSuperseded =
+    aggregate.execution.submissionStatus === "NODE_REJECTED" &&
+    ["PENDING", "PROPOSED", "COMMITTED"].includes(observation.status);
+  if (rejectionSuperseded) {
+    nextSnapshot = supersedeNodeRejectionFromChainEvidence(nextSnapshot, observation.status);
+  }
   let assertionStatus = aggregate.execution.assertionStatus;
   let assertionResult: unknown = aggregate.execution.assertionResult;
   let eventKind: string = applied.event.kind;
@@ -213,6 +253,10 @@ async function reconcileIntentOnce(
     // current conflict field.
     conflictType = null;
     conflictDetails = null;
+    if (rejectionSuperseded) {
+      eventKind = "SUBMISSION_REJECTION_SUPERSEDED";
+      reason = "A later direct chain observation proved that the exact transaction exists; earlier node rejection evidence was superseded";
+    }
   } else if (observation.status === "UNKNOWN" && inputInspection) {
     if (inputInspection.state === "MEMPOOL_CONTENDED") {
       conflictType = "INPUT_CONFLICT_SUSPECTED";
@@ -227,40 +271,50 @@ async function reconcileIntentOnce(
       eventKind = "INPUT_POOL_CONTENTION_DETECTED";
       reason = "Exact transaction is absent while an original input is live canonically but unavailable with tx-pool state";
     } else if (inputInspection.state === "CANONICALLY_SPENT") {
-      const priorDetails = asRecord(aggregate.execution.conflictDetails);
-      if (conflictObservationMatured(aggregate, inputInspection)) {
-        conflictType = "INPUT_SPENT";
-        conflictDetails = {
-          ...priorDetails,
-          source: "reconciliation",
-          classification: "INPUT_SPENT",
-          canonicalSpendConfirmed: true,
-          confirmedAt: inputInspection.observedAt,
-          confirmedTipBlockNumber: inputInspection.tipBlockNumber,
-          confirmationPolicy: aggregate.execution.confirmationPolicy,
-          inputs: inputInspection.inputs,
-        };
-        nextSnapshot = setWorkflowStatus(nextSnapshot, "CONFLICTED");
-        eventKind = "INPUT_CONFLICT_CONFIRMED";
-        reason = "Original input remains unavailable after the conflict recheck window; the exact signed transaction can no longer settle";
+      const priorDetails = aggregate.execution.conflictDetails;
+      if (conflictObservationMatured(aggregate.execution, inputInspection)) {
+        const corroboration = await corroborateCanonicalSpend({
+          client,
+          primary: inputInspection,
+          configuredEndpoints: urls,
+          inputOutPoints: aggregate.execution.inputOutPoints,
+          identity: {
+            chain: expectedChain(project.network),
+            genesisHash: project.rpcGenesisHash ?? process.env.CKB_EXPECTED_GENESIS_HASH ?? null,
+          },
+        });
+        if (corroboration.confirmed) {
+          conflictType = "INPUT_SPENT";
+          conflictDetails = {
+            ...nextSpentObservationDetails(priorDetails, inputInspection),
+            source: "reconciliation",
+            classification: "INPUT_SPENT",
+            canonicalSpendConfirmed: true,
+            confirmedAt: inputInspection.observedAt,
+            confirmedTipBlockNumber: inputInspection.tipBlockNumber,
+            confirmationPolicy: aggregate.execution.confirmationPolicy,
+            corroboration,
+            inputs: inputInspection.inputs,
+          };
+          nextSnapshot = setWorkflowStatus(nextSnapshot, "CONFLICTED");
+          eventKind = "INPUT_CONFLICT_CONFIRMED";
+          reason = corroboration.requiredEndpoints > 1
+            ? "Original input remained canonically spent through the recheck window and a second configured RPC corroborated the terminal conflict"
+            : "Original input remained canonically spent through the recheck window; only one trusted RPC endpoint is configured";
+        } else {
+          conflictType = "INPUT_CONFLICT_SUSPECTED";
+          conflictDetails = {
+            ...nextSpentObservationDetails(priorDetails, inputInspection),
+            corroboration,
+          };
+          eventKind = "INPUT_CONFLICT_CORROBORATION_PENDING";
+          reason = "Primary RPC indicates canonical spend, but a second configured RPC has not corroborated the terminal conflict";
+        }
       } else {
         conflictType = "INPUT_CONFLICT_SUSPECTED";
-        conflictDetails = {
-          source: "reconciliation",
-          classification: "INPUT_SPENT_OBSERVED",
-          canonicalSpendConfirmed: false,
-          firstObservedAt: priorDetails.classification === "INPUT_SPENT_OBSERVED"
-            ? priorDetails.firstObservedAt ?? inputInspection.observedAt
-            : inputInspection.observedAt,
-          firstObservedTipBlockNumber: priorDetails.classification === "INPUT_SPENT_OBSERVED"
-            ? priorDetails.firstObservedTipBlockNumber ?? inputInspection.tipBlockNumber
-            : inputInspection.tipBlockNumber,
-          lastObservedAt: inputInspection.observedAt,
-          lastObservedTipBlockNumber: inputInspection.tipBlockNumber,
-          inputs: inputInspection.inputs,
-        };
+        conflictDetails = nextSpentObservationDetails(priorDetails, inputInspection);
         eventKind = "INPUT_SPENT_OBSERVED";
-        reason = "Original input is no longer live while its creator transaction remains canonical; waiting through the configured recheck window before confirming conflict";
+        reason = "Original input is no longer live while its creator transaction remains canonical; waiting for repeated canonical spend evidence before confirming conflict";
       }
     } else if (inputInspection.state === "ALL_LIVE") {
       // Direct input evidence disproves a current canonical/pool conflict. An
@@ -271,8 +325,17 @@ async function reconcileIntentOnce(
       eventKind = "INPUT_STATE_INSPECTED";
       reason = "Exact transaction is absent and all original inputs remain live and available";
     } else {
+      const broken = breakSpendObservationContinuity(
+        conflictDetails,
+        inputInspection.observedAt,
+        "Original input state became uncertain",
+      );
+      if (broken !== conflictDetails) {
+        conflictType = "INPUT_CONFLICT_SUSPECTED";
+        conflictDetails = broken;
+      }
       eventKind = "INPUT_STATE_UNCERTAIN";
-      reason = "Exact transaction is absent but the original input state could not be proven";
+      reason = "Exact transaction is absent but the original input state could not be proven; spend-evidence continuity is paused";
     }
   }
 
@@ -291,6 +354,13 @@ async function reconcileIntentOnce(
       eventKind = "ASSERTION_VERIFIED";
     } else if (evaluated.status === "FAILED") {
       nextSnapshot = setWorkflowStatus(nextSnapshot, "CONFLICTED");
+      conflictType = "EXPECTED_CELL_ASSERTION_FAILED";
+      conflictDetails = {
+        source: "assertion",
+        classification: "EXPECTED_CELL_ASSERTION_FAILED",
+        evaluatedAt: observation.observedAt,
+        results: evaluated.results,
+      };
       eventKind = "ASSERTION_FAILED";
       reason = evaluated.reason;
     }

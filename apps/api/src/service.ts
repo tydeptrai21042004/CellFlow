@@ -207,14 +207,26 @@ export class CellFlowService {
         },
       },
     };
-    const sha256 = createHash("sha256").update(stable(document)).digest("hex");
-    if (!persist) return { ...document, sha256, persisted: false };
+    const snapshotSha256 = createHash("sha256").update(stable(document)).digest("hex");
+    const { generatedAt: _generatedAt, ...contentDocument } = document;
+    const contentSha256 = createHash("sha256").update(stable(contentDocument)).digest("hex");
+    if (!persist) {
+      return { ...document, sha256: snapshotSha256, snapshotSha256, contentSha256, persisted: false };
+    }
     const record = await this.repository.recordProjectEvidenceExport({
       projectId: project.id,
-      sha256,
-      document,
+      sha256: snapshotSha256,
+      document: { ...document, contentSha256 },
     });
-    return { ...document, sha256, persisted: true, exportId: record.id, exportedAt: record.createdAt };
+    return {
+      ...document,
+      sha256: snapshotSha256,
+      snapshotSha256,
+      contentSha256,
+      persisted: true,
+      exportId: record.id,
+      exportedAt: record.createdAt,
+    };
   }
 
   private decodeIntentCursor(value?: string | null): { createdAt: string; id: string } | null {
@@ -369,10 +381,15 @@ export class CellFlowService {
         reason: `Input preflight blocked broadcast: ${inspection.state}`,
         rawObservation: inspection,
       });
+      const errorCode = inspection.state === "MEMPOOL_CONTENDED"
+        ? "INPUTS_CONTENDED"
+        : inspection.state === "CANONICALLY_SPENT"
+          ? "INPUTS_NOT_LIVE"
+          : "INPUT_STATE_UNCERTAIN";
       throw new CellFlowError(
-        "INVALID_SIGNED_TRANSACTION",
+        errorCode,
         `Input preflight blocked broadcast: ${inspection.state}`,
-        409,
+        inspection.state === "UNKNOWN" ? 503 : 409,
         { inspectionState: inspection.state },
       );
     }

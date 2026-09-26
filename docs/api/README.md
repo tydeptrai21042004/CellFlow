@@ -24,11 +24,21 @@ For already-broadcast transactions, use `/track` instead.
 
 ## Status model
 
-The public response contains a derived `status` plus independent `submissionStatus`, `chainStatus`, and `workflowStatus`. This prevents RPC observations such as `UNKNOWN` from being confused with broadcast outcome or durable workflow state.
+The public response contains a derived `status` plus independent `submissionStatus`, `chainStatus`, and `workflowStatus`. This prevents RPC observations such as `UNKNOWN` from being confused with broadcast outcome or durable workflow state. It also contains a derived `recommendedAction` (`NONE`, `WAIT_FOR_RECONCILIATION`, `WAIT_AND_RECONCILE`, `REBUILD_FROM_LIVE_STATE`, `RECONCILE_CANONICAL_STATE`, or `MANUAL_REVIEW`) so applications can react without giving CellFlow custody or transaction-signing authority.
 
 ## Evidence
 
-`GET /api/v1/intents/{intentId}/evidence` returns the lifecycle snapshot, append-only state events and a deterministic SHA-256 over a canonical JSON representation. Evidence is an audit artifact, not a consensus proof.
+`GET /api/v1/intents/{intentId}/evidence` returns the lifecycle snapshot, append-only state events, `recommendedAction`, and deterministic hashes over the canonical JSON representation. `snapshotSha256` includes export metadata such as `generatedAt`; `contentSha256` excludes the export timestamp so unchanged project state has a stable content fingerprint. Evidence is an audit artifact, not a consensus proof.
+
+## Input preflight errors
+
+Prepared transactions are checked against the configured CKB RPC before broadcast. CellFlow distinguishes stale and uncertain input state instead of reporting every failure as an invalid signed transaction:
+
+- `INPUTS_NOT_LIVE` (`409`): one or more inputs are canonically spent.
+- `INPUTS_CONTENDED` (`409`): inputs are canonically live but unavailable when the transaction pool is included.
+- `INPUT_STATE_UNCERTAIN` (`503`): CellFlow cannot establish a safe input state from the RPC evidence.
+
+Applications should treat these as operational state, not signing-format errors.
 
 ## Webhooks
 

@@ -41,3 +41,7 @@ A change in this folder is complete only when:
 - What happens if CKB RPC is temporarily unavailable?
 - Can this behavior be proven in CI or with an evidence artifact?
 - Is this functionality already better owned by CCC, Cellora, Vercel, Neon or the consuming application?
+
+## CKB Testnet contention proof
+
+Use [`docs/evidence/TESTNET_INPUT_RACE.md`](../../docs/evidence/TESTNET_INPUT_RACE.md) for the real shared-input race. The proof intentionally keeps wallet/private-key handling outside CellFlow. Use `scripts/cellflow-testnet-setup.sh` to prepare PostgreSQL and validate the Testnet RPC identity before collecting evidence.

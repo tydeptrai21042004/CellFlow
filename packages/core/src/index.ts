@@ -4,3 +4,4 @@ export * from "./state-machine.ts";
 export * from "./confirmation.ts";
 export * from "./evidence.ts";
 export * from "./validation.ts";
+export * from "./conflict-evidence.ts";

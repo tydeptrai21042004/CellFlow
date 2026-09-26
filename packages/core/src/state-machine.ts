@@ -5,8 +5,10 @@ import type {
   ConfirmationPolicy,
   ExecutionSnapshot,
   OverallStatus,
+  RecommendedAction,
   SubmissionStatus,
   WorkflowStatus,
+  ConflictType,
 } from "./types.ts";
 
 export function parseHexBlockNumber(value: string | undefined): bigint | undefined {
@@ -55,6 +57,39 @@ export function deriveOverallStatus(snapshot: ExecutionSnapshot): OverallStatus 
   if (snapshot.submissionStatus === "BROADCASTING") return "SUBMITTING";
   if (snapshot.submissionStatus === "PREPARED") return "PREPARED";
   return "CREATED";
+}
+
+export function deriveRecommendedAction(
+  snapshot: ExecutionSnapshot,
+  conflictType: ConflictType | null = null,
+  assertionStatus: string | null = null,
+): RecommendedAction {
+  if (snapshot.workflowStatus === "CONFIRMED") return "NONE";
+  if (conflictType === "INPUT_SPENT") return "REBUILD_FROM_LIVE_STATE";
+  if (snapshot.workflowStatus === "REORGED" || conflictType === "REORG_CONFLICT") {
+    return "RECONCILE_CANONICAL_STATE";
+  }
+  if (conflictType === "INPUT_CONFLICT_SUSPECTED") return "WAIT_AND_RECONCILE";
+  if (assertionStatus === "FAILED" || conflictType === "EXPECTED_CELL_ASSERTION_FAILED") {
+    return "MANUAL_REVIEW";
+  }
+  if (snapshot.submissionStatus === "SUBMISSION_UNKNOWN") return "WAIT_FOR_RECONCILIATION";
+  if (snapshot.workflowStatus === "RECONCILING" || snapshot.workflowStatus === "WAITING_CONFIRMATIONS") {
+    return "WAIT_FOR_RECONCILIATION";
+  }
+  if (snapshot.chainStatus === "REJECTED" || snapshot.submissionStatus === "NODE_REJECTED") {
+    return "MANUAL_REVIEW";
+  }
+  return "NONE";
+}
+
+export function supersedeNodeRejectionFromChainEvidence(
+  snapshot: ExecutionSnapshot,
+  observedStatus: ChainObservation["status"],
+): ExecutionSnapshot {
+  if (snapshot.submissionStatus !== "NODE_REJECTED") return snapshot;
+  if (!["PENDING", "PROPOSED", "COMMITTED"].includes(observedStatus)) return snapshot;
+  return { ...snapshot, submissionStatus: "SUBMITTED" };
 }
 
 export function initialSnapshot(
@@ -168,7 +203,6 @@ export function applyChainObservation(
   if (
     snapshot.chainStatus === "COMMITTED" &&
     observation.status !== "COMMITTED" &&
-    observation.status !== "REJECTED" &&
     !reorgDetected
   ) {
     const preserved: ExecutionSnapshot = {
@@ -184,7 +218,9 @@ export function applyChainObservation(
         toOverall: deriveOverallStatus(preserved),
         at: observation.observedAt,
         observation,
-        reason: "Non-committed RPC observation did not prove the previously committed block left the canonical chain",
+        reason: observation.status === "REJECTED"
+          ? "Contradictory RPC rejection did not override a previously committed transaction whose recorded block remains canonical"
+          : "Non-committed RPC observation did not prove the previously committed block left the canonical chain",
       },
     };
   }

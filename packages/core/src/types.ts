@@ -62,6 +62,16 @@ export const conflictTypes = [
 ] as const;
 export type ConflictType = (typeof conflictTypes)[number];
 
+export const recommendedActions = [
+  "NONE",
+  "WAIT_FOR_RECONCILIATION",
+  "WAIT_AND_RECONCILE",
+  "REBUILD_FROM_LIVE_STATE",
+  "RECONCILE_CANONICAL_STATE",
+  "MANUAL_REVIEW",
+] as const;
+export type RecommendedAction = (typeof recommendedActions)[number];
+
 export const submissionErrorTypes = [
   "TRANSPORT_UNKNOWN",
   "RPC_REJECTION",
@@ -169,6 +179,7 @@ export interface EvidenceDocument {
   submissionErrorDetails: unknown;
   conflictType: ConflictType | null;
   conflictDetails: unknown;
+  recommendedAction: RecommendedAction;
   createdAt: string;
   updatedAt: string;
   events: EvidenceStateEvent[];

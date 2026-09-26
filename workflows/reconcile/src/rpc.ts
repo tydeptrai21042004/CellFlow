@@ -1,3 +1,7 @@
+import http from "node:http";
+import https from "node:https";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { CellFlowError, type ChainObservation, type OutPointRef } from "@cellflow/core";
 
 export interface RpcTransactionStatus {
@@ -22,6 +26,7 @@ export interface RpcTransactionResult {
 
 export interface RpcLiveCellResult {
   status: string;
+  block_hash?: string | null;
   cell?: {
     output: {
       capacity: string;
@@ -61,6 +66,7 @@ export interface InputObservation {
   creatorTxStatus: string | null;
   creatorBlockHash: string | null;
   creatorBlockNumber: string | null;
+  liveBlockHash: string | null;
 }
 
 export interface InputInspection {
@@ -95,6 +101,7 @@ export function parseRpcUrls(...sources: Array<string | null | undefined>): stri
       let parsed: URL;
       try { parsed = new URL(value); } catch { continue; }
       if (parsed.protocol !== "https:" && parsed.protocol !== "http:") continue;
+      if (parsed.username || parsed.password) continue;
       seen.add(parsed.toString());
       urls.push(parsed.toString());
     }
@@ -102,6 +109,135 @@ export function parseRpcUrls(...sources: Array<string | null | undefined>): stri
   return urls;
 }
 
+
+function ipv4ToInt(ip: string): number {
+  return ip.split(".").reduce((acc, octet) => ((acc << 8) | Number(octet)) >>> 0, 0);
+}
+
+function inV4Range(ip: string, base: string, prefix: number): boolean {
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+  return (ipv4ToInt(ip) & mask) === (ipv4ToInt(base) & mask);
+}
+
+export function isBlockedRpcIp(ip: string): boolean {
+  const family = isIP(ip);
+  if (family === 4) {
+    return [
+      ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8],
+      ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24],
+      ["192.168.0.0", 16], ["198.18.0.0", 15], ["198.51.100.0", 24], ["203.0.113.0", 24],
+      ["224.0.0.0", 4], ["240.0.0.0", 4],
+    ].some(([base, prefix]) => inV4Range(ip, String(base), Number(prefix)));
+  }
+  if (family === 6) {
+    const value = ip.toLowerCase();
+    const mappedDotted = value.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1];
+    if (mappedDotted && isIP(mappedDotted) === 4) return isBlockedRpcIp(mappedDotted);
+    const mappedHex = value.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    if (mappedHex?.[1] && mappedHex[2]) {
+      const high = Number.parseInt(mappedHex[1], 16);
+      const low = Number.parseInt(mappedHex[2], 16);
+      return isBlockedRpcIp(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
+    }
+    return (
+      value === "::" || value === "::1" || value.startsWith("fc") || value.startsWith("fd") ||
+      /^fe[89ab]/.test(value) || value.startsWith("ff") || value.startsWith("2001:db8") ||
+      value.startsWith("2002:") || value.startsWith("2001:0000:") || value.startsWith("64:ff9b::")
+    );
+  }
+  return true;
+}
+
+interface ResolvedRpcDestination {
+  url: URL;
+  address: string;
+  family: 4 | 6;
+}
+
+function allowLocalRpc(url: URL): boolean {
+  const explicit = process.env.CKB_ALLOW_INSECURE_RPC === "true";
+  const localHost = ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
+  return localHost && (explicit || process.env.NODE_ENV !== "production");
+}
+
+export async function resolveRpcDestination(rawUrl: string): Promise<ResolvedRpcDestination> {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new CellFlowError("RPC_UNAVAILABLE", "CKB RPC URL is invalid", 503);
+  }
+  if (url.username || url.password) {
+    throw new CellFlowError("RPC_UNAVAILABLE", "CKB RPC URL must not contain credentials", 503);
+  }
+  const localAllowed = allowLocalRpc(url);
+  if (url.protocol !== "https:" && !(localAllowed && url.protocol === "http:")) {
+    throw new CellFlowError("RPC_UNAVAILABLE", "CKB RPC must use HTTPS outside explicit local development", 503);
+  }
+  const records = await lookup(url.hostname, { all: true, verbatim: true });
+  if (records.length === 0) {
+    throw new CellFlowError("RPC_UNAVAILABLE", "CKB RPC hostname did not resolve", 503);
+  }
+  if (!localAllowed && records.some((record) => isBlockedRpcIp(record.address))) {
+    throw new CellFlowError("RPC_UNAVAILABLE", "CKB RPC hostname resolves to a blocked address", 503);
+  }
+  const chosen = records.find((record) => record.family === 4 || record.family === 6);
+  if (!chosen || (chosen.family !== 4 && chosen.family !== 6)) {
+    throw new CellFlowError("RPC_UNAVAILABLE", "CKB RPC hostname resolved to an unsupported address", 503);
+  }
+  return { url, address: chosen.address, family: chosen.family };
+}
+
+function postPinnedRpc<T>(destination: ResolvedRpcDestination, body: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const requestOptions: https.RequestOptions = {
+      protocol: destination.url.protocol,
+      hostname: destination.address,
+      family: destination.family,
+      port: destination.url.port ? Number(destination.url.port) : destination.url.protocol === "https:" ? 443 : 80,
+      method: "POST",
+      path: `${destination.url.pathname}${destination.url.search}`,
+      servername: destination.url.hostname,
+      headers: {
+        "content-type": "application/json",
+        "user-agent": "CellFlow/0.3",
+        host: destination.url.host,
+        "content-length": Buffer.byteLength(body).toString(),
+      },
+      timeout: rpcTimeoutMs(),
+    };
+    const onResponse = (response: http.IncomingMessage) => {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      response.on("data", (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > 2_000_000) {
+          response.destroy(new Error("RPC response exceeds 2 MB safety limit"));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.on("error", reject);
+      response.on("end", () => {
+        if ((response.statusCode ?? 500) < 200 || (response.statusCode ?? 500) >= 300) {
+          reject(new Error(`RPC HTTP ${response.statusCode ?? 0}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")) as T);
+        } catch {
+          reject(new Error("RPC response was not valid JSON"));
+        }
+      });
+    };
+    const request = destination.url.protocol === "https:"
+      ? https.request(requestOptions, onResponse)
+      : http.request(requestOptions, onResponse);
+    request.on("timeout", () => request.destroy(new Error("RPC request timed out")));
+    request.on("error", reject);
+    request.end(body);
+  });
+}
 
 type EndpointFailureState = { failures: number; cooldownUntil: number };
 const endpointFailures = new Map<string, EndpointFailureState>();
@@ -145,19 +281,21 @@ function rpcTimeoutMs(): number {
 
 class RpcEndpointSession {
   private requestId = 1;
-  constructor(readonly url: string) {}
+  readonly url: string;
+
+  constructor(url: string) {
+    this.url = url;
+  }
 
   async call<T>(method: string, params: unknown[] = []): Promise<T> {
-    const response = await fetch(this.url, {
-      method: "POST",
-      headers: { "content-type": "application/json", "user-agent": "CellFlow/0.3" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: this.requestId++, method, params }),
-      signal: AbortSignal.timeout(rpcTimeoutMs()),
-    });
-    if (!response.ok) throw new Error(`RPC HTTP ${response.status}`);
-    const text = await response.text();
-    if (text.length > 2_000_000) throw new Error("RPC response exceeds 2 MB safety limit");
-    const payload = JSON.parse(text) as JsonRpcEnvelope<T>;
+    // Resolve and validate on every request, then pin the socket to the validated
+    // address. This prevents a hostname that was safe during setup from being
+    // DNS-rebound to loopback, RFC1918, link-local or metadata infrastructure.
+    const destination = await resolveRpcDestination(this.url);
+    const payload = await postPinnedRpc<JsonRpcEnvelope<T>>(
+      destination,
+      JSON.stringify({ jsonrpc: "2.0", id: this.requestId++, method, params }),
+    );
     if (payload.error) throw new Error(`RPC ${payload.error.code}: ${payload.error.message}`);
     if (!("result" in payload)) throw new Error("RPC response did not include result");
     return payload.result as T;
@@ -259,6 +397,19 @@ export class CkbRpcClient {
       await session.assertIdentity(expectedIdentity);
       return inspectInputOutPointsOnSession(session, inputOutPoints);
     });
+  }
+
+  async inspectInputOutPointsAt(
+    endpoint: string,
+    inputOutPoints: OutPointRef[],
+    expectedIdentity: RpcIdentityExpectation = {},
+  ): Promise<InputInspection> {
+    if (!this.urls.includes(endpoint)) {
+      throw new CellFlowError("RPC_UNAVAILABLE", "Requested corroboration endpoint is not configured", 503);
+    }
+    const session = new RpcEndpointSession(endpoint);
+    await session.assertIdentity(expectedIdentity);
+    return inspectInputOutPointsOnSession(session, inputOutPoints);
   }
 
   async observe(
@@ -452,6 +603,7 @@ async function inspectInputOutPointsOnSession(
     let creatorTxStatus: string | null = null;
     let creatorBlockHash: string | null = null;
     let creatorBlockNumber: string | null = null;
+    let liveBlockHash: string | null = normalizeHash(canonicalResult?.block_hash);
 
     if (canonicalRpcStatus === "live") {
       canonical = "LIVE";
@@ -481,6 +633,7 @@ async function inspectInputOutPointsOnSession(
       creatorTxStatus,
       creatorBlockHash,
       creatorBlockNumber,
+      liveBlockHash,
     });
   }
 

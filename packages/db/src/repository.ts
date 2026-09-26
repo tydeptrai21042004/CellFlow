@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Sql, TransactionSql } from "postgres";
 import {
   deriveOverallStatus,
+  deriveRecommendedAction,
   type ConflictType,
   type ConfirmationPolicy,
   type ExecutionSnapshot,
@@ -1200,6 +1201,11 @@ export class CellFlowRepository {
       submissionErrorDetails: aggregate.execution.submissionErrorDetails,
       conflictType: aggregate.execution.conflictType,
       conflictDetails: aggregate.execution.conflictDetails,
+      recommendedAction: deriveRecommendedAction(
+        snapshot,
+        aggregate.execution.conflictType,
+        aggregate.execution.assertionStatus,
+      ),
       workflowRunId: aggregate.execution.workflowRunId,
       createdAt: aggregate.intent.createdAt,
       updatedAt: aggregate.execution.updatedAt,

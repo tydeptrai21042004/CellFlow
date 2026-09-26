@@ -41,3 +41,10 @@ A change in this folder is complete only when:
 - What happens if CKB RPC is temporarily unavailable?
 - Can this behavior be proven in CI or with an evidence artifact?
 - Is this functionality already better owned by CCC, Cellora, Vercel, Neon or the consuming application?
+
+## Current behavioral suites
+
+- `npm run test:rpc-integration` starts local fake CKB JSON-RPC servers and exercises live-Cell classification, canonical-spend proof, failover, block-hash evidence and RPC destination safety without a real network dependency.
+- `npm run test:db-integration` requires PostgreSQL and verifies reconciliation lease exclusivity, lease-expiry recovery and optimistic-concurrency rejection of stale writers. CI supplies PostgreSQL automatically.
+
+Critical protocol behavior should be asserted through these suites rather than only by source-text/regex checks.

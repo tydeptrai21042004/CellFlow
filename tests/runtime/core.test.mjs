@@ -4,6 +4,7 @@ import {
   applyChainObservation,
   computeConfirmationCount,
   deriveOverallStatus,
+  deriveRecommendedAction,
   initialSnapshot,
   isConfirmationSatisfied,
   normalizeIntentId,
@@ -11,6 +12,10 @@ import {
   parseHexBlockNumber,
   setWorkflowStatus,
   updateSubmission,
+  supersedeNodeRejectionFromChainEvidence,
+  breakSpendObservationContinuity,
+  conflictObservationMatured,
+  nextSpentObservationDetails,
 } from "../../.tmp/core/index.js";
 
 test("submission identity is persisted before broadcast", () => {
@@ -268,4 +273,80 @@ test("chain evidence outranks a later submission-layer rejection", () => {
   assert.equal(observed.snapshot.submissionStatus, "NODE_REJECTED");
   assert.equal(observed.snapshot.chainStatus, "PENDING");
   assert.equal(deriveOverallStatus(observed.snapshot), "PENDING");
+});
+
+
+test("contradictory rejected RPC observation cannot erase a canonical prior commit", () => {
+  const committed = applyChainObservation(
+    updateSubmission(initialSnapshot({ mode: "depth", blocks: 5 }), "SUBMITTED"),
+    {
+      status: "COMMITTED", observedAt: "2026-09-26T00:00:00Z", raw: {},
+      blockHash: "0xcanonical", blockNumber: "0x64", tipBlockNumber: "0x65",
+    },
+  ).snapshot;
+  const contradictory = applyChainObservation(committed, {
+    status: "REJECTED", observedAt: "2026-09-26T00:01:00Z", raw: {},
+    rejectionReason: "lagging node", priorCommitCanonical: true,
+  });
+  assert.equal(contradictory.reorgDetected, false);
+  assert.equal(contradictory.snapshot.chainStatus, "COMMITTED");
+  assert.equal(contradictory.snapshot.committedBlockHash, "0xcanonical");
+  assert.match(contradictory.event.reason ?? "", /Contradictory RPC rejection/i);
+});
+
+test("only direct positive chain evidence supersedes NODE_REJECTED", () => {
+  const prepared = updateSubmission(initialSnapshot(), "PREPARED");
+  const rejected = updateSubmission(prepared, "NODE_REJECTED");
+  assert.equal(supersedeNodeRejectionFromChainEvidence(rejected, "UNKNOWN").submissionStatus, "NODE_REJECTED");
+  assert.equal(supersedeNodeRejectionFromChainEvidence(rejected, "REJECTED").submissionStatus, "NODE_REJECTED");
+  assert.equal(supersedeNodeRejectionFromChainEvidence(rejected, "PENDING").submissionStatus, "SUBMITTED");
+  assert.equal(supersedeNodeRejectionFromChainEvidence(rejected, "COMMITTED").submissionStatus, "SUBMITTED");
+});
+
+test("recommended actions are machine-readable and conservative", () => {
+  const unknown = updateSubmission(
+    updateSubmission(updateSubmission(initialSnapshot(), "PREPARED"), "BROADCASTING"),
+    "SUBMISSION_UNKNOWN",
+  );
+  assert.equal(deriveRecommendedAction(unknown), "WAIT_FOR_RECONCILIATION");
+  assert.equal(deriveRecommendedAction(unknown, "INPUT_CONFLICT_SUSPECTED"), "WAIT_AND_RECONCILE");
+  assert.equal(
+    deriveRecommendedAction({ ...unknown, workflowStatus: "CONFLICTED" }, "INPUT_SPENT"),
+    "REBUILD_FROM_LIVE_STATE",
+  );
+  assert.equal(
+    deriveRecommendedAction({ ...unknown, workflowStatus: "REORGED" }),
+    "RECONCILE_CANONICAL_STATE",
+  );
+  assert.equal(
+    deriveRecommendedAction({ ...unknown, workflowStatus: "CONFLICTED" }, "EXPECTED_CELL_ASSERTION_FAILED", "FAILED"),
+    "MANUAL_REVIEW",
+  );
+});
+
+
+test("canonical spend maturity requires uninterrupted repeated evidence", () => {
+  const firstInspection = {
+    observedAt: "2026-09-26T00:00:00Z",
+    tipBlockNumber: "0x64",
+    inputs: [{ outPoint: { txHash: `0x${"11".repeat(32)}`, index: 0 }, canonical: "SPENT" }],
+  };
+  const first = nextSpentObservationDetails(null, firstInspection);
+  const execution = { confirmationPolicy: { mode: "depth", blocks: 4 }, conflictDetails: first };
+  assert.equal(conflictObservationMatured(execution, { ...firstInspection, observedAt: "2026-09-26T00:01:00Z", tipBlockNumber: "0x68" }), true);
+
+  const broken = breakSpendObservationContinuity(first, "2026-09-26T00:00:30Z", "RPC unavailable");
+  assert.equal(conflictObservationMatured(
+    { confirmationPolicy: { mode: "depth", blocks: 4 }, conflictDetails: broken },
+    { ...firstInspection, observedAt: "2026-09-26T00:01:00Z", tipBlockNumber: "0x68" },
+  ), false);
+
+  const restarted = nextSpentObservationDetails(broken, {
+    ...firstInspection,
+    observedAt: "2026-09-26T00:01:00Z",
+    tipBlockNumber: "0x68",
+  });
+  assert.equal(restarted.firstObservedTipBlockNumber, "0x68");
+  assert.equal(restarted.spentObservationCount, 1);
+  assert.equal(restarted.continuityBroken, false);
 });

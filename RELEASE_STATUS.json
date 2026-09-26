@@ -1,7 +1,7 @@
 {
   "schemaVersion": "cellflow-release-preflight-v1",
   "version": "0.3.0",
-  "generatedAt": "2026-09-25T14:03:48.767Z",
+  "generatedAt": "2026-09-26T15:40:27.696Z",
   "readyForCleanReleasePipeline": false,
   "blockers": [
     {
@@ -63,6 +63,12 @@
       "ok": true,
       "severity": "blocker",
       "detail": "direct third-party versions are pinned"
+    },
+    {
+      "name": "file:.github/workflows/ci.yml",
+      "ok": true,
+      "severity": "blocker",
+      "detail": ".github/workflows/ci.yml"
     },
     {
       "name": "file:.env.example",
@@ -135,6 +141,24 @@
       "ok": true,
       "severity": "blocker",
       "detail": "CELLFLOW_WEBHOOK_MAX_ATTEMPTS documented"
+    },
+    {
+      "name": "env-template:CKB_RPC_CIRCUIT_FAILURES",
+      "ok": true,
+      "severity": "blocker",
+      "detail": "CKB_RPC_CIRCUIT_FAILURES documented"
+    },
+    {
+      "name": "env-template:CKB_RPC_CIRCUIT_COOLDOWN_MS",
+      "ok": true,
+      "severity": "blocker",
+      "detail": "CKB_RPC_CIRCUIT_COOLDOWN_MS documented"
+    },
+    {
+      "name": "env-template:CKB_ALLOW_INSECURE_RPC",
+      "ok": true,
+      "severity": "blocker",
+      "detail": "CKB_ALLOW_INSECURE_RPC documented"
     }
   ]
 }

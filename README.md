@@ -4,6 +4,13 @@
 
 CellFlow sits after transaction construction/signing and before application business finalization. It does not hold keys. It persists application intent, tracks CKB transaction state, survives serverless restarts, handles ambiguous broadcast outcomes, waits for configurable confirmation depth, detects reorg evidence, verifies expected output Cells, and emits signed webhooks.
 
+### Recovery guidance and input-conflict evidence
+
+CellFlow keeps transaction construction/signing outside the operations layer, but every intent now exposes a machine-readable `recommendedAction`. Canonical input-spend conflicts mature only from repeated uninterrupted chain evidence; RPC uncertainty breaks that continuity, and terminal input-spend decisions are corroborated by a second configured RPC endpoint when one is available. The RPC transport resolves and validates destinations on every request and pins the socket to the validated IP to reduce DNS-rebinding/SSRF risk.
+
+For deterministic coverage run `npm run test:rpc-integration`. PostgreSQL lease/concurrency behavior is covered by `npm run test:db-integration`. For the real Testnet shared-input proof, follow `docs/evidence/TESTNET_INPUT_RACE.md`; signing keys remain outside CellFlow.
+
+
 ## Implemented V0.3 production candidate
 
 This repository now contains a runnable implementation rather than only the original blueprint:

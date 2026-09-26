@@ -136,12 +136,27 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/TxHash' }
+            schema: { $ref: '#/components/schemas/PrepareTransaction' }
       responses:
-        '200': { description: Transaction prepared for tracked broadcast }
+        '200': { description: Transaction hash and original input OutPoints persisted before broadcast }
         '400': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
+  /api/v1/intents/{intentId}/preflight:
+    post:
+      summary: Verify prepared transaction inputs immediately before broadcast
+      description: >-
+        Requires write scope. Checks each persisted input against canonical and
+        transaction-pool-aware live-Cell state. Returns INPUTS_NOT_LIVE,
+        INPUTS_CONTENDED, or INPUT_STATE_UNCERTAIN rather than treating stale
+        network state as a signed-transaction format error.
+      parameters:
+        - $ref: '#/components/parameters/IntentId'
+      responses:
+        '200': { description: All persisted inputs are canonically live and available }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
   /api/v1/intents/{intentId}/broadcasting:
     post:
       summary: Mark a persisted transaction as entering a broadcast attempt
@@ -251,6 +266,8 @@ paths:
       description: >-
         Requires read scope. Returns project metrics, release identity and operational
         state without mutating durable state or returning API-key secrets/key metadata.
+        snapshotSha256 hashes the complete export including generatedAt; contentSha256
+        excludes generatedAt to provide a stable fingerprint for unchanged project state.
       responses:
         '200': { description: Non-persisted project evidence document and SHA-256 }
         '403': { $ref: '#/components/responses/Error' }
@@ -397,6 +414,29 @@ components:
         txHash:
           type: string
           pattern: '^0x[0-9a-fA-F]{64}$'
+    OutPoint:
+      type: object
+      required: [txHash, index]
+      properties:
+        txHash:
+          type: string
+          pattern: '^0x[0-9a-fA-F]{64}$'
+        index: { type: integer, minimum: 0, maximum: 4294967295 }
+    PrepareTransaction:
+      type: object
+      required: [txHash]
+      properties:
+        txHash:
+          type: string
+          pattern: '^0x[0-9a-fA-F]{64}$'
+        inputOutPoints:
+          type: array
+          maxItems: 1024
+          items: { $ref: '#/components/schemas/OutPoint' }
+          default: []
+    RecommendedAction:
+      type: string
+      enum: [NONE, WAIT_FOR_RECONCILIATION, WAIT_AND_RECONCILE, REBUILD_FROM_LIVE_STATE, RECONCILE_CANONICAL_STATE, MANUAL_REVIEW]
     ScriptAssertion:
       type: object
       properties:
