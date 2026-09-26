@@ -1,3 +1,4 @@
+import type { SubmissionFailureEvidence } from "@cellflow/core";
 import { z } from "zod";
 
 const hex = z.string().regex(/^0x[0-9a-fA-F]*$/);
@@ -49,7 +50,13 @@ export const submissionFailureSchema = z.object({
     "OTHER",
   ]).optional(),
   details: z.record(z.string(), z.unknown()).optional(),
-});
+}).transform((value): SubmissionFailureEvidence => ({
+  errorType: value.errorType,
+  ...(value.errorCode !== undefined ? { errorCode: value.errorCode } : {}),
+  ...(value.errorMessage !== undefined ? { errorMessage: value.errorMessage } : {}),
+  ...(value.conflictType !== undefined ? { conflictType: value.conflictType } : {}),
+  ...(value.details !== undefined ? { details: value.details } : {}),
+}));
 
 export const setupSchema = z.object({
   name: z.string().min(1).max(120),
