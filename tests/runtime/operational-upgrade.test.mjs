@@ -63,10 +63,10 @@ test("webhook delivery honors Retry-After and enforces a total attempt budget", 
   assert.match(delivery, /x-cellflow-attempt/);
 });
 
-test("readiness verifies schema migration and liveness returns 503 when database is unhealthy", async () => {
+test("readiness verifies latest schema migration and liveness returns 503 when database is unhealthy", async () => {
   const ready = await text("apps/web/app/api/ready/route.ts");
   const health = await text("apps/web/app/api/health/route.ts");
-  assert.match(ready, /004_operational_scalability\.sql/);
+  assert.match(ready, /005_input_evidence\.sql/);
   assert.match(ready, /schema: false/);
   assert.match(health, /status: database \? 200 : 503/);
 });

@@ -1,4 +1,5 @@
 import { CellFlowError } from "./errors.ts";
+import type { OutPointRef } from "./types.ts";
 
 export function normalizeTxHash(value: string): string {
   const normalized = value.toLowerCase();
@@ -18,4 +19,25 @@ export function normalizeIntentId(value: string): string {
     );
   }
   return normalized;
+}
+
+export function normalizeOutPointRef(value: OutPointRef): OutPointRef {
+  return {
+    txHash: normalizeTxHash(value.txHash),
+    index: normalizeOutPointIndex(value.index),
+  };
+}
+
+export function normalizeOutPointRefs(values: OutPointRef[]): OutPointRef[] {
+  if (values.length > 1024) {
+    throw new CellFlowError("INVALID_SIGNED_TRANSACTION", "A transaction may not persist more than 1024 input OutPoints", 400);
+  }
+  return values.map(normalizeOutPointRef);
+}
+
+function normalizeOutPointIndex(value: number): number {
+  if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
+    throw new CellFlowError("INVALID_SIGNED_TRANSACTION", "Input OutPoint index must be a uint32", 400);
+  }
+  return value;
 }

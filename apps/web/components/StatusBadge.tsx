@@ -3,7 +3,7 @@ interface StatusBadgeProps {
   compact?: boolean;
 }
 
-const attention = new Set(["REJECTED", "CONFLICTED", "REORGED", "EXPIRED"]);
+const attention = new Set(["REJECTED", "NODE_REJECTED", "CONFLICTED", "REORGED", "EXPIRED"]);
 const success = new Set(["CONFIRMED", "VERIFIED", "DELIVERED"]);
 const progress = new Set([
   "PENDING", "PROPOSED", "COMMITTED", "RECONCILING", "WAITING_CONFIRMATIONS",

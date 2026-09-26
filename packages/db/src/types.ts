@@ -1,8 +1,11 @@
 import type {
   ChainStatus,
+  ConflictType,
   ConfirmationPolicy,
   ExecutionSnapshot,
+  SubmissionErrorType,
   SubmissionStatus,
+  OutPointRef,
   WorkflowStatus,
 } from "@cellflow/core";
 
@@ -53,6 +56,7 @@ export interface ExecutionRecord {
   projectId: string;
   intentRowId: string;
   txHash: string | null;
+  inputOutPoints: OutPointRef[];
   network: string;
   submissionStatus: SubmissionStatus;
   chainStatus: ChainStatus;
@@ -62,6 +66,11 @@ export interface ExecutionRecord {
   committedBlockHash: string | null;
   committedBlockNumber: string | null;
   rejectionReason: string | null;
+  submissionErrorCode: string | null;
+  submissionErrorType: SubmissionErrorType | null;
+  submissionErrorDetails: unknown;
+  conflictType: ConflictType | null;
+  conflictDetails: unknown;
   assertionStatus: string | null;
   assertionResult: unknown;
   lastRawObservation: unknown;

@@ -1,3 +1,10 @@
+import type {
+  ConflictType,
+  OutPointRef,
+  SubmissionErrorType,
+  SubmissionFailureEvidence,
+} from "@cellflow/core";
+
 export interface CellFlowClientOptions {
   endpoint: string;
   apiKey: string;
@@ -10,17 +17,25 @@ export interface TrackInput {
   expectedCells?: unknown[];
 }
 
-export interface PrepareInput extends TrackInput {}
+export interface PrepareInput extends TrackInput {
+  inputOutPoints?: OutPointRef[];
+}
 
 export interface IntentView {
   intentId: string;
   txHash: string | null;
+  inputOutPoints: OutPointRef[];
   status: string;
   submissionStatus: string;
   chainStatus: string;
   workflowStatus: string;
   confirmationCount: number;
   assertionStatus: string | null;
+  submissionErrorCode: string | null;
+  submissionErrorType: SubmissionErrorType | null;
+  submissionErrorDetails: unknown;
+  conflictType: ConflictType | null;
+  conflictDetails: unknown;
   [key: string]: unknown;
 }
 
@@ -90,7 +105,13 @@ export class CellFlowClient {
     });
     const result = await this.request<{ intent: IntentView }>(
       `/api/v1/intents/${encodeURIComponent(input.intentId)}/prepare`,
-      { method: "POST", body: JSON.stringify({ txHash: input.txHash }) },
+      {
+        method: "POST",
+        body: JSON.stringify({
+          txHash: input.txHash,
+          inputOutPoints: input.inputOutPoints ?? [],
+        }),
+      },
     );
     return result.intent;
   }
@@ -111,10 +132,24 @@ export class CellFlowClient {
     return result.intent;
   }
 
-  async markAmbiguous(intentId: string): Promise<IntentView> {
+  async markAmbiguous(
+    intentId: string,
+    failure?: SubmissionFailureEvidence,
+  ): Promise<IntentView> {
     const result = await this.request<{ intent: IntentView }>(
       `/api/v1/intents/${encodeURIComponent(intentId)}/ambiguous`,
-      { method: "POST", body: "{}" },
+      { method: "POST", body: JSON.stringify(failure ?? {}) },
+    );
+    return result.intent;
+  }
+
+  async markNodeRejected(
+    intentId: string,
+    failure: SubmissionFailureEvidence,
+  ): Promise<IntentView> {
+    const result = await this.request<{ intent: IntentView }>(
+      `/api/v1/intents/${encodeURIComponent(intentId)}/rejected`,
+      { method: "POST", body: JSON.stringify(failure) },
     );
     return result.intent;
   }
@@ -152,7 +187,7 @@ export class CellFlowClient {
     while (Date.now() < deadline) {
       const current = await this.get(intentId);
       if (!current) throw new Error(`Intent ${intentId} was not found`);
-      if (current.status === "REJECTED" || current.status === "CONFLICTED" || current.status === "EXPIRED") {
+      if (["REJECTED", "NODE_REJECTED", "CONFLICTED", "EXPIRED"].includes(current.status)) {
         return current;
       }
       if (until === "committed" && ["COMMITTED", "CONFIRMED"].includes(current.status)) return current;

@@ -86,7 +86,7 @@ export default function Dashboard() {
 
   const localMetrics = useMemo(() => ({
     total: intents.length,
-    active: intents.filter((item) => !["CONFIRMED", "REJECTED", "CONFLICTED", "EXPIRED"].includes(item.status)).length,
+    active: intents.filter((item) => !["CONFIRMED", "REJECTED", "NODE_REJECTED", "CONFLICTED", "EXPIRED"].includes(item.status)).length,
     confirmed: intents.filter((item) => item.status === "CONFIRMED").length,
     attention: intents.filter((item) => statusTone(item.status) === "danger" || item.status === "UNKNOWN").length,
   }), [intents]);

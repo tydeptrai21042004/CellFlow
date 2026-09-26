@@ -245,3 +245,27 @@ test("committed observation without block depth does not falsely satisfy depth p
 test("confirmation count saturates safely for huge block distance", () => {
   assert.equal(computeConfirmationCount("0x0", "0xffffffffffffffffffffffffffffffff"), Number.MAX_SAFE_INTEGER);
 });
+
+
+test("explicit node rejection is a distinct terminal submission-layer state", () => {
+  const prepared = updateSubmission(initialSnapshot(), "PREPARED");
+  const broadcasting = updateSubmission(prepared, "BROADCASTING");
+  const rejected = updateSubmission(broadcasting, "NODE_REJECTED");
+  assert.equal(rejected.submissionStatus, "NODE_REJECTED");
+  assert.equal(rejected.chainStatus, "UNOBSERVED");
+  assert.equal(deriveOverallStatus(rejected), "NODE_REJECTED");
+  assert.throws(() => updateSubmission(rejected, "SUBMITTED"), /node rejection/i);
+});
+
+
+test("chain evidence outranks a later submission-layer rejection", () => {
+  let snapshot = updateSubmission(initialSnapshot(), "PREPARED");
+  snapshot = updateSubmission(snapshot, "BROADCASTING");
+  snapshot = updateSubmission(snapshot, "NODE_REJECTED");
+  const observed = applyChainObservation(snapshot, {
+    status: "PENDING", observedAt: "2026-09-26T00:00:00Z", raw: {},
+  });
+  assert.equal(observed.snapshot.submissionStatus, "NODE_REJECTED");
+  assert.equal(observed.snapshot.chainStatus, "PENDING");
+  assert.equal(deriveOverallStatus(observed.snapshot), "PENDING");
+});

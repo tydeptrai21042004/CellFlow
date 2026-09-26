@@ -63,8 +63,8 @@ export async function GET(request: Request) {
   try {
     checks.database = await repository.ping();
     if (!checks.database) errors.push("database unavailable");
-    checks.schema = checks.database && await repository.hasMigration("004_operational_scalability.sql");
-    if (checks.database && !checks.schema) errors.push("database schema is not at migration 004_operational_scalability.sql");
+    checks.schema = checks.database && await repository.hasMigration("005_input_evidence.sql");
+    if (checks.database && !checks.schema) errors.push("database schema is not at migration 005_input_evidence.sql");
   } catch {
     errors.push("database unavailable");
   }

@@ -25,7 +25,31 @@ export const createIntentSchema = z.object({
   expectedCells: z.array(expectedCellSchema).max(32).default([]),
 });
 
+export const outPointSchema = z.object({
+  txHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
+  index: z.number().int().min(0).max(0xffffffff),
+});
+
 export const txHashSchema = z.object({ txHash: z.string() });
+
+export const prepareTransactionSchema = z.object({
+  txHash: z.string(),
+  inputOutPoints: z.array(outPointSchema).max(1024).default([]),
+});
+
+export const submissionFailureSchema = z.object({
+  errorCode: z.string().max(128).optional(),
+  errorType: z.enum(["TRANSPORT_UNKNOWN", "RPC_REJECTION", "HASH_MISMATCH"]),
+  errorMessage: z.string().max(4000).optional(),
+  conflictType: z.enum([
+    "INPUT_CONFLICT_SUSPECTED",
+    "INPUT_SPENT",
+    "EXPECTED_CELL_ASSERTION_FAILED",
+    "REORG_CONFLICT",
+    "OTHER",
+  ]).optional(),
+  details: z.record(z.string(), z.unknown()).optional(),
+});
 
 export const setupSchema = z.object({
   name: z.string().min(1).max(120),

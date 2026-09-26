@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { Sql, TransactionSql } from "postgres";
-import { deriveOverallStatus, type ConfirmationPolicy, type ExecutionSnapshot } from "@cellflow/core";
+import {
+  deriveOverallStatus,
+  type ConflictType,
+  type ConfirmationPolicy,
+  type ExecutionSnapshot,
+  type OutPointRef,
+  type SubmissionErrorType,
+} from "@cellflow/core";
 import { getSql } from "./client.ts";
 import { snapshotFromExecution } from "./types.ts";
 import type {
@@ -68,6 +75,7 @@ function mapExecution(row: Record<string, unknown>): ExecutionRecord {
     projectId: String(row.project_id),
     intentRowId: String(row.intent_row_id),
     txHash: row.tx_hash ? String(row.tx_hash) : null,
+    inputOutPoints: (row.input_out_points ?? []) as OutPointRef[],
     network: String(row.network),
     submissionStatus: row.submission_status as ExecutionRecord["submissionStatus"],
     chainStatus: row.chain_status as ExecutionRecord["chainStatus"],
@@ -77,6 +85,11 @@ function mapExecution(row: Record<string, unknown>): ExecutionRecord {
     committedBlockHash: row.committed_block_hash ? String(row.committed_block_hash) : null,
     committedBlockNumber: row.committed_block_number ? String(row.committed_block_number) : null,
     rejectionReason: row.rejection_reason ? String(row.rejection_reason) : null,
+    submissionErrorCode: row.submission_error_code ? String(row.submission_error_code) : null,
+    submissionErrorType: row.submission_error_type ? row.submission_error_type as SubmissionErrorType : null,
+    submissionErrorDetails: row.submission_error_details ?? null,
+    conflictType: row.conflict_type ? row.conflict_type as ConflictType : null,
+    conflictDetails: row.conflict_details ?? null,
     assertionStatus: row.assertion_status ? String(row.assertion_status) : null,
     assertionResult: row.assertion_result ?? null,
     lastRawObservation: row.last_raw_observation ?? null,
@@ -422,11 +435,12 @@ export class CellFlowRepository {
         ))::int as confirmed,
         (count(*) filter (
           where e.workflow_status in ('CONFLICTED','EXPIRED') or e.chain_status = 'REJECTED'
+             or (e.submission_status = 'NODE_REJECTED' and e.chain_status in ('UNOBSERVED','UNKNOWN'))
         ))::int as terminal_failure,
         (count(*) filter (
           where e.chain_status in ('UNKNOWN','REJECTED')
              or e.workflow_status in ('REORGED','CONFLICTED','EXPIRED')
-             or e.submission_status = 'SUBMISSION_UNKNOWN'
+             or e.submission_status in ('SUBMISSION_UNKNOWN','NODE_REJECTED')
         ))::int as attention
       from intents i join executions e on e.intent_row_id = i.id
       where i.project_id = ${projectId}
@@ -453,12 +467,14 @@ export class CellFlowRepository {
           where project_id = ${projectId}
             and workflow_status not in ('CONFIRMED','CONFLICTED','EXPIRED')
             and chain_status <> 'REJECTED'
+            and submission_status <> 'NODE_REJECTED'
             and tx_hash is not null
             and (last_observed_at is null or last_observed_at < now() - (${stale} * interval '1 minute'))) as stale_active_intents,
         (select extract(epoch from (now() - min(created_at)))::bigint from executions
           where project_id = ${projectId}
             and workflow_status not in ('CONFIRMED','CONFLICTED','EXPIRED')
-            and chain_status <> 'REJECTED') as oldest_active_age_seconds,
+            and chain_status <> 'REJECTED'
+            and submission_status <> 'NODE_REJECTED') as oldest_active_age_seconds,
         (select count(*)::int from webhook_deliveries where project_id = ${projectId} and status in ('PENDING','RETRY','CLAIMED')) as pending_webhooks,
         (select count(*)::int from webhook_deliveries where project_id = ${projectId} and status = 'FAILED') as failed_webhooks,
         (select count(*)::int from api_keys where project_id = ${projectId} and revoked_at is null and (expires_at is null or expires_at > now())) as active_api_keys,
@@ -535,6 +551,7 @@ export class CellFlowRepository {
     aggregate: IntentAggregate;
     txHash: string;
     submissionStatus: ExecutionRecord["submissionStatus"];
+    inputOutPoints?: OutPointRef[];
     nextReconcileAt?: Date | null;
     fromStatus: string;
     toStatus: string;
@@ -543,10 +560,14 @@ export class CellFlowRepository {
     if (input.aggregate.execution.txHash && input.aggregate.execution.txHash !== input.txHash) {
       throw new Error("INTENT_TX_CONFLICT");
     }
+    const persistedInputs = input.inputOutPoints && input.inputOutPoints.length > 0
+      ? input.inputOutPoints
+      : input.aggregate.execution.inputOutPoints;
     await this.sql.begin(async (tx) => {
       const updated = await tx`
         update executions
         set tx_hash = ${input.txHash}, submission_status = ${input.submissionStatus},
+            input_out_points = ${tx.json(toJsonValue(persistedInputs))},
             next_reconcile_at = ${input.nextReconcileAt ?? null}, version = version + 1, updated_at = now()
         where id = ${input.aggregate.execution.id}
           and project_id = ${input.aggregate.intent.projectId}
@@ -574,6 +595,7 @@ export class CellFlowRepository {
         fromStatus: input.fromStatus,
         toStatus: input.toStatus,
         reason: input.reason,
+        rawObservation: persistedInputs.length > 0 ? { inputOutPoints: persistedInputs } : undefined,
         occurredAt: new Date(),
         snapshot,
         assertionStatus: input.aggregate.execution.assertionStatus,
@@ -592,12 +614,26 @@ export class CellFlowRepository {
     fromStatus: string;
     toStatus: string;
     reason: string;
+    submissionErrorCode?: string | null;
+    submissionErrorType?: SubmissionErrorType | null;
+    submissionErrorDetails?: unknown;
+    conflictType?: ConflictType | null;
+    conflictDetails?: unknown;
   }): Promise<IntentAggregate> {
     await this.sql.begin(async (tx) => {
       const updated = await tx`
         update executions
         set submission_status = ${input.status},
-            next_reconcile_at = ${input.scheduleReconcile ? new Date() : input.aggregate.execution.nextReconcileAt},
+            submission_error_code = ${input.submissionErrorCode ?? null},
+            submission_error_type = ${input.submissionErrorType ?? null},
+            submission_error_details = ${input.submissionErrorDetails === undefined ? null : tx.json(toJsonValue(input.submissionErrorDetails))},
+            conflict_type = ${input.conflictType ?? input.aggregate.execution.conflictType},
+            conflict_details = ${input.conflictDetails === undefined
+              ? input.aggregate.execution.conflictDetails === null ? null : tx.json(toJsonValue(input.aggregate.execution.conflictDetails))
+              : tx.json(toJsonValue(input.conflictDetails))},
+            next_reconcile_at = ${input.status === "NODE_REJECTED"
+              ? null
+              : input.scheduleReconcile ? new Date() : input.aggregate.execution.nextReconcileAt},
             version = version + 1, updated_at = now()
         where id = ${input.aggregate.execution.id}
           and project_id = ${input.aggregate.intent.projectId}
@@ -624,6 +660,13 @@ export class CellFlowRepository {
         fromStatus: input.fromStatus,
         toStatus: input.toStatus,
         reason: input.reason,
+        rawObservation: input.submissionErrorType ? {
+          submissionErrorCode: input.submissionErrorCode ?? null,
+          submissionErrorType: input.submissionErrorType,
+          submissionErrorDetails: input.submissionErrorDetails ?? null,
+          conflictType: input.conflictType ?? null,
+          conflictDetails: input.conflictDetails ?? null,
+        } : undefined,
         occurredAt: new Date(),
         snapshot,
         assertionStatus: input.aggregate.execution.assertionStatus,
@@ -781,6 +824,7 @@ export class CellFlowRepository {
         where e.next_reconcile_at is not null and e.next_reconcile_at <= now()
           and e.workflow_status not in ('CONFLICTED', 'EXPIRED')
           and e.chain_status <> 'REJECTED'
+          and e.submission_status <> 'NODE_REJECTED'
           and (e.reconcile_lease_until is null or e.reconcile_lease_until < now())
         order by e.next_reconcile_at asc
         for update of e skip locked
@@ -1132,6 +1176,7 @@ export class CellFlowRepository {
       intentId: aggregate.intent.intentId,
       metadata: aggregate.intent.metadata,
       txHash: aggregate.execution.txHash,
+      inputOutPoints: aggregate.execution.inputOutPoints,
       status: deriveOverallStatus(snapshot),
       submissionStatus: snapshot.submissionStatus,
       chainStatus: snapshot.chainStatus,
@@ -1142,6 +1187,11 @@ export class CellFlowRepository {
       committedBlockNumber: snapshot.committedBlockNumber ?? null,
       assertionStatus: aggregate.execution.assertionStatus,
       assertionResult: aggregate.execution.assertionResult,
+      submissionErrorCode: aggregate.execution.submissionErrorCode,
+      submissionErrorType: aggregate.execution.submissionErrorType,
+      submissionErrorDetails: aggregate.execution.submissionErrorDetails,
+      conflictType: aggregate.execution.conflictType,
+      conflictDetails: aggregate.execution.conflictDetails,
       workflowRunId: aggregate.execution.workflowRunId,
       createdAt: aggregate.intent.createdAt,
       updatedAt: aggregate.execution.updatedAt,

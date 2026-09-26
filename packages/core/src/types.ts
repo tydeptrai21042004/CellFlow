@@ -4,6 +4,7 @@ export const submissionStatuses = [
   "BROADCASTING",
   "SUBMITTED",
   "SUBMISSION_UNKNOWN",
+  "NODE_REJECTED",
 ] as const;
 export type SubmissionStatus = (typeof submissionStatuses)[number];
 
@@ -41,10 +42,40 @@ export const overallStatuses = [
   "RECONCILING",
   "REORGED",
   "REJECTED",
+  "NODE_REJECTED",
   "CONFLICTED",
   "EXPIRED",
 ] as const;
 export type OverallStatus = (typeof overallStatuses)[number];
+
+export interface OutPointRef {
+  txHash: string;
+  index: number;
+}
+
+export const conflictTypes = [
+  "INPUT_CONFLICT_SUSPECTED",
+  "INPUT_SPENT",
+  "EXPECTED_CELL_ASSERTION_FAILED",
+  "REORG_CONFLICT",
+  "OTHER",
+] as const;
+export type ConflictType = (typeof conflictTypes)[number];
+
+export const submissionErrorTypes = [
+  "TRANSPORT_UNKNOWN",
+  "RPC_REJECTION",
+  "HASH_MISMATCH",
+] as const;
+export type SubmissionErrorType = (typeof submissionErrorTypes)[number];
+
+export interface SubmissionFailureEvidence {
+  errorCode?: string;
+  errorType: SubmissionErrorType;
+  errorMessage?: string;
+  conflictType?: ConflictType;
+  details?: Record<string, unknown>;
+}
 
 export interface ConfirmationPolicyCommitted {
   mode: "committed";
@@ -122,6 +153,7 @@ export interface EvidenceDocument {
   projectId: string;
   intentId: string;
   txHash: string | null;
+  inputOutPoints: OutPointRef[];
   network: string;
   overallStatus: OverallStatus;
   submissionStatus: SubmissionStatus;
@@ -132,6 +164,11 @@ export interface EvidenceDocument {
   committedBlockHash: string | null;
   committedBlockNumber: string | null;
   assertionStatus: string | null;
+  submissionErrorCode: string | null;
+  submissionErrorType: SubmissionErrorType | null;
+  submissionErrorDetails: unknown;
+  conflictType: ConflictType | null;
+  conflictDetails: unknown;
   createdAt: string;
   updatedAt: string;
   events: EvidenceStateEvent[];

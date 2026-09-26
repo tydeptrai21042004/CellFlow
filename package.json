@@ -16,13 +16,14 @@
     "build": "npm run build -w @cellflow/web",
     "start": "npm run start -w @cellflow/web",
     "typecheck": "tsc -p tsconfig.check.json --noEmit",
-    "test": "npm run test:core && npm run test:assertions && node --test tests/runtime/tree.test.mjs tests/runtime/hardening.test.mjs tests/runtime/ui.test.mjs tests/runtime/stability-upgrade.test.mjs tests/runtime/production-readiness.test.mjs tests/runtime/security-hardening.test.mjs tests/runtime/operational-upgrade.test.mjs",
+    "test": "npm run test:core && npm run test:assertions && npm run test:ccc-classifier && node --test tests/runtime/tree.test.mjs tests/runtime/hardening.test.mjs tests/runtime/ui.test.mjs tests/runtime/stability-upgrade.test.mjs tests/runtime/production-readiness.test.mjs tests/runtime/security-hardening.test.mjs tests/runtime/operational-upgrade.test.mjs tests/runtime/session1-input-evidence.test.mjs",
     "test:core": "rm -rf .tmp/core && tsc -p packages/core/tsconfig.json && node --test tests/runtime/core.test.mjs",
     "migrate": "node scripts/migrate.mjs",
     "verify": "npm run test && node scripts/verify-tree.mjs",
     "test:assertions": "rm -rf .tmp/assertions && tsc -p packages/assertions/tsconfig.json && node --test tests/runtime/assertions.test.mjs",
     "release:report": "node scripts/release-preflight.mjs --report",
-    "release:check": "node scripts/release-preflight.mjs --strict"
+    "release:check": "node scripts/release-preflight.mjs --strict",
+    "test:ccc-classifier": "rm -rf .tmp/ccc-classifier && tsc packages/ccc/src/broadcast-errors.ts --target ES2022 --module NodeNext --moduleResolution NodeNext --outDir .tmp/ccc-classifier --strict --skipLibCheck && node --test tests/runtime/ccc-broadcast-errors.test.mjs"
   },
   "devDependencies": {
     "@types/node": "22.0.0",

@@ -4,9 +4,12 @@ import {
   CellFlowError,
   deriveOverallStatus,
   normalizeIntentId,
+  normalizeOutPointRefs,
   normalizeTxHash,
   parseConfirmationPolicy,
   updateSubmission,
+  type OutPointRef,
+  type SubmissionFailureEvidence,
 } from "@cellflow/core";
 import {
   CellFlowRepository,
@@ -255,12 +258,25 @@ export class CellFlowService {
     intentId: string,
     txHashInput: string,
     submissionStatus: "PREPARED" | "SUBMITTED",
+    inputOutPoints?: OutPointRef[],
   ): Promise<Record<string, unknown>> {
     const txHash = normalizeTxHash(txHashInput);
+    const normalizedInputs = inputOutPoints === undefined ? undefined : normalizeOutPointRefs(inputOutPoints);
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const current = await this.getIntent(project, intentId);
       if (current.execution.txHash && current.execution.txHash !== txHash) {
         throw new CellFlowError("INTENT_CONFLICT", "Intent is already bound to a different transaction hash", 409);
+      }
+      if (
+        normalizedInputs && normalizedInputs.length > 0 &&
+        current.execution.inputOutPoints.length > 0 &&
+        JSON.stringify(current.execution.inputOutPoints) !== JSON.stringify(normalizedInputs)
+      ) {
+        throw new CellFlowError(
+          "INTENT_CONFLICT",
+          "Persisted input OutPoints do not match the existing evidence for this transaction hash",
+          409,
+        );
       }
       const before = snapshotFromExecution(current.execution);
       const after = updateSubmission(before, submissionStatus);
@@ -269,6 +285,7 @@ export class CellFlowService {
           aggregate: current,
           txHash,
           submissionStatus,
+          ...(normalizedInputs ? { inputOutPoints: normalizedInputs } : {}),
           nextReconcileAt: submissionStatus === "SUBMITTED" ? new Date() : null,
           fromStatus: deriveOverallStatus(before),
           toStatus: deriveOverallStatus(after),
@@ -290,8 +307,44 @@ export class CellFlowService {
   async markSubmission(
     project: ProjectRecord,
     intentId: string,
-    status: "BROADCASTING" | "SUBMITTED" | "SUBMISSION_UNKNOWN",
+    status: "BROADCASTING" | "SUBMITTED" | "SUBMISSION_UNKNOWN" | "NODE_REJECTED",
+    failure?: SubmissionFailureEvidence,
   ): Promise<Record<string, unknown>> {
+    if (status === "NODE_REJECTED" && failure?.errorType !== "RPC_REJECTION") {
+      throw new CellFlowError(
+        "TRANSITION_INVALID",
+        "NODE_REJECTED requires RPC_REJECTION evidence",
+        400,
+      );
+    }
+    if (status === "SUBMISSION_UNKNOWN" && failure?.errorType === "RPC_REJECTION") {
+      throw new CellFlowError(
+        "TRANSITION_INVALID",
+        "Explicit RPC rejection cannot be recorded as SUBMISSION_UNKNOWN",
+        400,
+      );
+    }
+    if (failure?.conflictType && failure.conflictType !== "INPUT_CONFLICT_SUSPECTED") {
+      throw new CellFlowError(
+        "TRANSITION_INVALID",
+        "Broadcast classification may only record INPUT_CONFLICT_SUSPECTED before direct chain inspection",
+        400,
+      );
+    }
+    if (status === "SUBMISSION_UNKNOWN" && failure?.conflictType) {
+      throw new CellFlowError(
+        "TRANSITION_INVALID",
+        "Ambiguous transport failures cannot claim an input conflict",
+        400,
+      );
+    }
+    if (!["NODE_REJECTED", "SUBMISSION_UNKNOWN"].includes(status) && failure) {
+      throw new CellFlowError(
+        "TRANSITION_INVALID",
+        `Submission failure evidence is not valid for ${status}`,
+        400,
+      );
+    }
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const current = await this.getIntent(project, intentId);
       if (!current.execution.txHash) {
@@ -301,9 +354,11 @@ export class CellFlowService {
       const after = updateSubmission(before, status);
       const reason = status === "SUBMISSION_UNKNOWN"
         ? "Broadcast response was ambiguous; reconcile by deterministic tx hash before retry"
-        : status === "BROADCASTING"
-          ? "Broadcast attempt started after transaction identity was persisted"
-          : "CKB RPC accepted the broadcast request";
+        : status === "NODE_REJECTED"
+          ? "CKB RPC explicitly rejected the broadcast request; rejection is submission-layer evidence, not proof of canonical input spend"
+          : status === "BROADCASTING"
+            ? "Broadcast attempt started after transaction identity was persisted"
+            : "CKB RPC accepted the broadcast request";
       try {
         const updated = await this.repository.markSubmissionStatus({
           aggregate: current,
@@ -312,6 +367,17 @@ export class CellFlowService {
           fromStatus: deriveOverallStatus(before),
           toStatus: deriveOverallStatus(after),
           reason,
+          submissionErrorCode: failure?.errorCode ?? null,
+          submissionErrorType: failure?.errorType ?? null,
+          submissionErrorDetails: failure ? {
+            message: failure.errorMessage ?? null,
+            ...(failure.details ?? {}),
+          } : null,
+          conflictType: failure?.conflictType ?? null,
+          conflictDetails: failure?.conflictType ? {
+            source: "broadcast",
+            canonicalSpendConfirmed: false,
+          } : null,
         });
         return this.repository.executionPublicView(updated);
       } catch (error) {
@@ -341,9 +407,15 @@ export class CellFlowService {
       projectId: project.id,
       intentId: aggregate.intent.intentId,
       txHash: aggregate.execution.txHash,
+      inputOutPoints: aggregate.execution.inputOutPoints,
       network: aggregate.execution.network,
       snapshot: snapshotFromExecution(aggregate.execution),
       assertionStatus: aggregate.execution.assertionStatus,
+      submissionErrorCode: aggregate.execution.submissionErrorCode,
+      submissionErrorType: aggregate.execution.submissionErrorType,
+      submissionErrorDetails: aggregate.execution.submissionErrorDetails,
+      conflictType: aggregate.execution.conflictType,
+      conflictDetails: aggregate.execution.conflictDetails,
       createdAt: aggregate.intent.createdAt,
       updatedAt: events.at(-1)?.occurredAt ?? aggregate.intent.createdAt,
       events: events.map((event) => ({

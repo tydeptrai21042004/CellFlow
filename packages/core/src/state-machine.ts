@@ -47,6 +47,7 @@ export function deriveOverallStatus(snapshot: ExecutionSnapshot): OverallStatus 
   if (snapshot.chainStatus === "COMMITTED") return "COMMITTED";
   if (snapshot.chainStatus === "PROPOSED") return "PROPOSED";
   if (snapshot.chainStatus === "PENDING") return "PENDING";
+  if (snapshot.submissionStatus === "NODE_REJECTED") return "NODE_REJECTED";
   if (snapshot.workflowStatus === "RECONCILING") return "RECONCILING";
   if (snapshot.chainStatus === "UNKNOWN") return "UNKNOWN";
   if (snapshot.submissionStatus === "SUBMITTED") return "SUBMITTED";
@@ -85,6 +86,29 @@ export function updateSubmission(
       "Cannot change submission state after authoritative rejection",
       409,
     );
+  }
+
+  if (snapshot.submissionStatus === "NODE_REJECTED") {
+    if (next === "NODE_REJECTED") return snapshot;
+    throw new CellFlowError(
+      "TRANSITION_INVALID",
+      "Cannot change submission state after an explicit node rejection",
+      409,
+    );
+  }
+
+  if (next === "NODE_REJECTED") {
+    const allowed = ["PREPARED", "BROADCASTING", "SUBMISSION_UNKNOWN"].includes(
+      snapshot.submissionStatus,
+    );
+    if (!allowed) {
+      throw new CellFlowError(
+        "TRANSITION_INVALID",
+        `Cannot record node rejection from ${snapshot.submissionStatus}`,
+        409,
+      );
+    }
+    return { ...snapshot, submissionStatus: next };
   }
 
   const order: SubmissionStatus[] = [
