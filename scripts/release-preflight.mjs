@@ -25,7 +25,18 @@ for (const path of [
   "SECURITY.md",
   "docs/operations/RUNBOOK.md",
   "docs/funding/REVIEWER_VERIFICATION.md",
+  "docs/funding/AUTOMATED_EVIDENCE.md",
   "docs/api/openapi.yaml",
+  "scripts/generate-env.sh",
+  "scripts/generate-lockfile.sh",
+  "scripts/clean-release-check.sh",
+  "scripts/evidence/testnet-preflight.mjs",
+  "scripts/evidence/rpc-failover-proof.mjs",
+  "scripts/evidence/db-restart-proof.mjs",
+  "evidence/testnet/README.md",
+  "evidence/testnet/manifest.example.json",
+  ".nvmrc",
+  ".gitignore",
 ]) add(`file:${path}`, await exists(path), "blocker", path);
 
 const manifests = ["package.json"];

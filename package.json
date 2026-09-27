@@ -16,7 +16,7 @@
     "build": "npm run build -w @cellflow/web",
     "start": "npm run start -w @cellflow/web",
     "typecheck": "tsc -p tsconfig.check.json --noEmit",
-    "test": "npm run test:core && npm run test:assertions && npm run test:ccc-classifier && npm run test:rpc-integration && node --test tests/runtime/tree.test.mjs tests/runtime/hardening.test.mjs tests/runtime/ui.test.mjs tests/runtime/stability-upgrade.test.mjs tests/runtime/production-readiness.test.mjs tests/runtime/security-hardening.test.mjs tests/runtime/operational-upgrade.test.mjs tests/runtime/session1-input-evidence.test.mjs tests/runtime/session2-input-reconciliation.test.mjs",
+    "test": "npm run test:core && npm run test:assertions && npm run test:ccc-classifier && npm run test:rpc-integration && node --test tests/runtime/tree.test.mjs tests/runtime/hardening.test.mjs tests/runtime/ui.test.mjs tests/runtime/stability-upgrade.test.mjs tests/runtime/production-readiness.test.mjs tests/runtime/security-hardening.test.mjs tests/runtime/operational-upgrade.test.mjs tests/runtime/session1-input-evidence.test.mjs tests/runtime/session2-input-reconciliation.test.mjs tests/runtime/funding-automation.test.mjs",
     "test:core": "rm -rf .tmp/core && tsc -p packages/core/tsconfig.json && node --test tests/runtime/core.test.mjs",
     "migrate": "node scripts/migrate.mjs",
     "verify": "npm run test && node scripts/verify-tree.mjs",
@@ -25,7 +25,14 @@
     "release:check": "node scripts/release-preflight.mjs --strict",
     "test:ccc-classifier": "rm -rf .tmp/ccc-classifier && tsc packages/ccc/src/broadcast-errors.ts --target ES2022 --module NodeNext --moduleResolution NodeNext --outDir .tmp/ccc-classifier --strict --skipLibCheck && node --test tests/runtime/ccc-broadcast-errors.test.mjs",
     "test:rpc-integration": "node --experimental-transform-types --test tests/integration/rpc-behavior.test.mjs",
-    "test:db-integration": "node --experimental-transform-types --test tests/integration/db-concurrency.test.mjs"
+    "test:db-integration": "node --experimental-transform-types --test tests/integration/db-concurrency.test.mjs",
+    "setup:env": "bash scripts/generate-env.sh",
+    "setup:postgres": "bash scripts/setup-local-postgres.sh",
+    "setup:lockfile": "bash scripts/generate-lockfile.sh",
+    "release:clean": "bash scripts/clean-release-check.sh",
+    "evidence:testnet-preflight": "node scripts/evidence/testnet-preflight.mjs",
+    "evidence:rpc-failover": "node --experimental-transform-types scripts/evidence/rpc-failover-proof.mjs",
+    "evidence:db-restart": "node --experimental-transform-types scripts/evidence/db-restart-proof.mjs"
   },
   "devDependencies": {
     "@types/node": "22.0.0",

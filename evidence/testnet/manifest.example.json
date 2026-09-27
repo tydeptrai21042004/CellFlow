@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "cellflow-funding-evidence-manifest-v1",
+  "cellflowVersion": "0.3.0",
+  "sourceCommit": "REPLACE_WITH_GIT_SHA",
+  "network": "ckb_testnet",
+  "genesisHash": "REPLACE_WITH_TESTNET_GENESIS_HASH",
+  "deploymentVersion": "REPLACE_IF_APPLICABLE",
+  "experiment": "ambiguous-broadcast-restart-recovery",
+  "intentId": "REPLACE",
+  "txHash": "REPLACE",
+  "outpoints": [],
+  "confirmationPolicy": "depth:4",
+  "startedAt": "REPLACE",
+  "finishedAt": "REPLACE",
+  "result": "REPLACE",
+  "evidenceFiles": [],
+  "notes": "Do not claim a real outage/redeploy unless the experiment actually performed it."
+}
