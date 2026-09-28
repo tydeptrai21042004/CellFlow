@@ -3,6 +3,8 @@ import type {
   EvidenceDocument,
   EvidenceStateEvent,
   ExecutionSnapshot,
+  EvidenceAttempt,
+  InputRef,
   OutPointRef,
   SubmissionErrorType,
 } from "./types.ts";
@@ -13,6 +15,10 @@ export interface EvidenceInput {
   intentId: string;
   txHash: string | null;
   inputOutPoints: OutPointRef[];
+  inputRefs: InputRef[];
+  activeAttemptId: string | null;
+  winningAttemptId: string | null;
+  attempts: EvidenceAttempt[];
   network: string;
   snapshot: ExecutionSnapshot;
   assertionStatus: string | null;
@@ -29,11 +35,15 @@ export interface EvidenceInput {
 export function buildEvidence(input: EvidenceInput): EvidenceDocument {
   const sortedEvents = [...input.events].sort((a, b) => a.sequence - b.sequence);
   return {
-    schemaVersion: "cellflow-evidence-v1",
+    schemaVersion: "cellflow-evidence-v2",
     projectId: input.projectId,
     intentId: input.intentId,
     txHash: input.txHash,
     inputOutPoints: input.inputOutPoints,
+    inputRefs: input.inputRefs,
+    activeAttemptId: input.activeAttemptId,
+    winningAttemptId: input.winningAttemptId,
+    attempts: [...input.attempts].sort((a, b) => a.attemptNumber - b.attemptNumber),
     network: input.network,
     overallStatus: deriveOverallStatus(input.snapshot),
     submissionStatus: input.snapshot.submissionStatus,
@@ -49,7 +59,12 @@ export function buildEvidence(input: EvidenceInput): EvidenceDocument {
     submissionErrorDetails: input.submissionErrorDetails,
     conflictType: input.conflictType,
     conflictDetails: input.conflictDetails,
-    recommendedAction: deriveRecommendedAction(input.snapshot, input.conflictType, input.assertionStatus),
+    recommendedAction: deriveRecommendedAction(
+      input.snapshot,
+      input.conflictType,
+      input.assertionStatus,
+      input.conflictDetails,
+    ),
     createdAt: input.createdAt,
     updatedAt: input.updatedAt,
     events: sortedEvents,

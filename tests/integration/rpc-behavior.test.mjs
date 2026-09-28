@@ -95,13 +95,16 @@ test("input inspection distinguishes mempool contention and records live-cell bl
       TARGET,
       undefined,
       { chain: "ckb_testnet", genesisHash: GENESIS },
-      [{ txHash: CREATOR, index: 0 }],
+      [{ outPoint: { txHash: CREATOR, index: 0 }, role: "APPLICATION_STATE", resourceKey: "campaign:test" }],
     );
     assert.equal(observed.observation.status, "UNKNOWN");
     assert.equal(observed.inputInspection?.state, "MEMPOOL_CONTENDED");
     assert.equal(observed.inputInspection?.inputs[0]?.canonical, "LIVE");
     assert.equal(observed.inputInspection?.inputs[0]?.poolAware, "UNAVAILABLE");
     assert.equal(observed.inputInspection?.inputs[0]?.liveBlockHash, LIVE_BLOCK);
+    assert.equal(observed.inputInspection?.inputs[0]?.input.role, "APPLICATION_STATE");
+    assert.equal(observed.inputInspection?.contendedInputs.length, 1);
+    assert.equal(observed.inputInspection?.spentInputs.length, 0);
   } finally {
     await rpc.close();
   }
@@ -112,12 +115,13 @@ test("canonical spend requires creator transaction to remain canonical", async (
   try {
     const client = new CkbRpcClient([rpc.url]);
     const inspection = await client.inspectInputOutPoints(
-      [{ txHash: CREATOR, index: 0 }],
+      [{ outPoint: { txHash: CREATOR, index: 0 }, role: "WALLET_FUNDING" }],
       { chain: "ckb_testnet", genesisHash: GENESIS },
     );
     assert.equal(inspection.state, "CANONICALLY_SPENT");
     assert.equal(inspection.inputs[0]?.creatorTxStatus, "committed");
     assert.equal(inspection.inputs[0]?.creatorBlockHash, CREATOR_BLOCK);
+    assert.equal(inspection.spentInputs[0]?.input.role, "WALLET_FUNDING");
   } finally {
     await rpc.close();
   }

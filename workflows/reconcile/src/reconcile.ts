@@ -7,6 +7,7 @@ import {
   breakSpendObservationContinuity,
   conflictObservationMatured,
   nextSpentObservationDetails,
+  type ConflictDomain,
   type ConflictType,
   type ExecutionSnapshot,
 } from "@cellflow/core";
@@ -58,6 +59,22 @@ export interface ReconcileResult {
   error?: string;
 }
 
+function inputConflictDomain(inspection: InputInspection, mode: "spent" | "contended"): ConflictDomain {
+  const observations = mode === "spent" ? inspection.spentInputs : inspection.contendedInputs;
+  let application = false;
+  let wallet = false;
+  let unknown = false;
+  for (const observation of observations) {
+    if (observation.input.role === "APPLICATION_STATE") application = true;
+    else if (observation.input.role === "WALLET_FUNDING" || observation.input.role === "FEE") wallet = true;
+    else unknown = true;
+  }
+  if (application && wallet) return "MIXED";
+  if (application && !unknown) return "APPLICATION";
+  if (wallet && !unknown) return "WALLET";
+  return "UNKNOWN";
+}
+
 function isTerminal(snapshot: ExecutionSnapshot, assertionStatus: string | null, expectedCount: number): boolean {
   if (snapshot.workflowStatus === "CONFLICTED" || snapshot.workflowStatus === "EXPIRED" || snapshot.chainStatus === "REJECTED") {
     return true;
@@ -70,7 +87,7 @@ async function corroborateCanonicalSpend(input: {
   client: CkbRpcClient;
   primary: InputInspection;
   configuredEndpoints: string[];
-  inputOutPoints: IntentAggregate["execution"]["inputOutPoints"];
+  inputOutPoints: IntentAggregate["execution"]["inputRefs"];
   identity: { chain: string | null; genesisHash: string | null };
 }): Promise<{
   confirmed: boolean;
@@ -168,6 +185,9 @@ async function reconcileIntentOnce(
   }
   const client = new CkbRpcClient(urls);
   const prior = snapshotFromExecution(aggregate.execution);
+  const reconciliationInputs = aggregate.execution.inputRefs.length > 0
+    ? aggregate.execution.inputRefs
+    : aggregate.execution.inputOutPoints.map((outPoint) => ({ outPoint, role: "OTHER" as const }));
 
   let observed;
   try {
@@ -181,7 +201,7 @@ async function reconcileIntentOnce(
         chain: expectedChain(project.network),
         genesisHash: project.rpcGenesisHash ?? process.env.CKB_EXPECTED_GENESIS_HASH ?? null,
       },
-      aggregate.execution.inputOutPoints,
+      reconciliationInputs,
     );
   } catch (error) {
     // An RPC outage is absence of new evidence, not evidence that a previously
@@ -266,6 +286,8 @@ async function reconcileIntentOnce(
         canonicalSpendConfirmed: false,
         observedAt: inputInspection.observedAt,
         tipBlockNumber: inputInspection.tipBlockNumber,
+        inputDomain: inputConflictDomain(inputInspection, "contended"),
+        contendedInputs: inputInspection.contendedInputs,
         inputs: inputInspection.inputs,
       };
       eventKind = "INPUT_POOL_CONTENTION_DETECTED";
@@ -277,7 +299,7 @@ async function reconcileIntentOnce(
           client,
           primary: inputInspection,
           configuredEndpoints: urls,
-          inputOutPoints: aggregate.execution.inputOutPoints,
+          inputOutPoints: reconciliationInputs,
           identity: {
             chain: expectedChain(project.network),
             genesisHash: project.rpcGenesisHash ?? process.env.CKB_EXPECTED_GENESIS_HASH ?? null,
@@ -293,6 +315,8 @@ async function reconcileIntentOnce(
             confirmedAt: inputInspection.observedAt,
             confirmedTipBlockNumber: inputInspection.tipBlockNumber,
             confirmationPolicy: aggregate.execution.confirmationPolicy,
+            inputDomain: inputConflictDomain(inputInspection, "spent"),
+            spentInputs: inputInspection.spentInputs,
             corroboration,
             inputs: inputInspection.inputs,
           };
@@ -305,6 +329,8 @@ async function reconcileIntentOnce(
           conflictType = "INPUT_CONFLICT_SUSPECTED";
           conflictDetails = {
             ...nextSpentObservationDetails(priorDetails, inputInspection),
+            inputDomain: inputConflictDomain(inputInspection, "spent"),
+            spentInputs: inputInspection.spentInputs,
             corroboration,
           };
           eventKind = "INPUT_CONFLICT_CORROBORATION_PENDING";
@@ -312,7 +338,11 @@ async function reconcileIntentOnce(
         }
       } else {
         conflictType = "INPUT_CONFLICT_SUSPECTED";
-        conflictDetails = nextSpentObservationDetails(priorDetails, inputInspection);
+        conflictDetails = {
+          ...nextSpentObservationDetails(priorDetails, inputInspection),
+          inputDomain: inputConflictDomain(inputInspection, "spent"),
+          spentInputs: inputInspection.spentInputs,
+        };
         eventKind = "INPUT_SPENT_OBSERVED";
         reason = "Original input is no longer live while its creator transaction remains canonical; waiting for repeated canonical spend evidence before confirming conflict";
       }

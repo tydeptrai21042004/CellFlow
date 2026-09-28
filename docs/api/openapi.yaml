@@ -128,8 +128,12 @@ paths:
         '404': { $ref: '#/components/responses/Error' }
   /api/v1/intents/{intentId}/prepare:
     post:
-      summary: Persist a deterministic transaction hash before broadcasting
-      description: Requires write scope.
+      summary: Persist a signed transaction attempt before broadcasting
+      description: >-
+        Requires write scope. The first hash creates attempt INITIAL. A later
+        hash for the same business intent may create REBUILD, RBF_REPLACEMENT,
+        or MANUAL_RETRY after the current attempt is no longer potentially live,
+        without losing the earlier attempt history.
       parameters:
         - $ref: '#/components/parameters/IntentId'
       requestBody:
@@ -138,7 +142,7 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/PrepareTransaction' }
       responses:
-        '200': { description: Transaction hash and original input OutPoints persisted before broadcast }
+        '200': { description: Transaction attempt, exact inputs, and semantic input roles persisted before broadcast }
         '400': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
@@ -422,6 +426,15 @@ components:
           type: string
           pattern: '^0x[0-9a-fA-F]{64}$'
         index: { type: integer, minimum: 0, maximum: 4294967295 }
+    InputRef:
+      type: object
+      required: [outPoint, role]
+      properties:
+        outPoint: { $ref: '#/components/schemas/OutPoint' }
+        role:
+          type: string
+          enum: [APPLICATION_STATE, WALLET_FUNDING, FEE, DEPENDENCY, OTHER]
+        resourceKey: { type: string, minLength: 1, maxLength: 256 }
     PrepareTransaction:
       type: object
       required: [txHash]
@@ -434,9 +447,21 @@ components:
           maxItems: 1024
           items: { $ref: '#/components/schemas/OutPoint' }
           default: []
+        inputRefs:
+          type: array
+          maxItems: 1024
+          items: { $ref: '#/components/schemas/InputRef' }
+          default: []
+        attemptKind:
+          type: string
+          enum: [INITIAL, REBUILD, RBF_REPLACEMENT, MANUAL_RETRY]
+        parentAttemptId:
+          oneOf:
+            - { type: string, format: uuid }
+            - { type: 'null' }
     RecommendedAction:
       type: string
-      enum: [NONE, WAIT_FOR_RECONCILIATION, WAIT_AND_RECONCILE, REBUILD_FROM_LIVE_STATE, RECONCILE_CANONICAL_STATE, MANUAL_REVIEW]
+      enum: [NONE, WAIT_FOR_RECONCILIATION, WAIT_AND_RECONCILE, REBUILD_FROM_LIVE_STATE, RECOLLECT_WALLET_INPUTS, REBUILD_AND_RESIGN, RECONCILE_CANONICAL_STATE, MANUAL_REVIEW]
     ScriptAssertion:
       type: object
       properties:

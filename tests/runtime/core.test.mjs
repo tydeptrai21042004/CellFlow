@@ -312,7 +312,34 @@ test("recommended actions are machine-readable and conservative", () => {
   assert.equal(deriveRecommendedAction(unknown, "INPUT_CONFLICT_SUSPECTED"), "WAIT_AND_RECONCILE");
   assert.equal(
     deriveRecommendedAction({ ...unknown, workflowStatus: "CONFLICTED" }, "INPUT_SPENT"),
+    "MANUAL_REVIEW",
+  );
+  assert.equal(
+    deriveRecommendedAction(
+      { ...unknown, workflowStatus: "CONFLICTED" },
+      "INPUT_SPENT",
+      null,
+      { inputDomain: "APPLICATION" },
+    ),
     "REBUILD_FROM_LIVE_STATE",
+  );
+  assert.equal(
+    deriveRecommendedAction(
+      { ...unknown, workflowStatus: "CONFLICTED" },
+      "INPUT_SPENT",
+      null,
+      { inputDomain: "WALLET" },
+    ),
+    "RECOLLECT_WALLET_INPUTS",
+  );
+  assert.equal(
+    deriveRecommendedAction(
+      { ...unknown, workflowStatus: "CONFLICTED" },
+      "INPUT_SPENT",
+      null,
+      { inputDomain: "MIXED" },
+    ),
+    "REBUILD_AND_RESIGN",
   );
   assert.equal(
     deriveRecommendedAction({ ...unknown, workflowStatus: "REORGED" }),

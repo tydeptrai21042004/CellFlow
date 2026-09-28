@@ -10,7 +10,7 @@ For a CCC application, prefer the `@cellflow/ccc` adapter rather than manually c
 
 1. Create an idempotent business intent.
 2. Sign/prepare the CKB transaction.
-3. Compute and persist the deterministic transaction hash with `/prepare` **before broadcast**.
+3. Compute and persist the deterministic transaction hash with `/prepare` **before broadcast**. Each signed hash is an attempt under the stable business intent; rebuilds create a new attempt instead of overwriting history.
 4. Mark `/broadcasting` and call the CKB RPC.
 5. On acknowledged broadcast, call `/submitted`.
 6. On timeout/network ambiguity, call `/ambiguous`; do **not** blindly rebroadcast.
@@ -24,11 +24,11 @@ For already-broadcast transactions, use `/track` instead.
 
 ## Status model
 
-The public response contains a derived `status` plus independent `submissionStatus`, `chainStatus`, and `workflowStatus`. This prevents RPC observations such as `UNKNOWN` from being confused with broadcast outcome or durable workflow state. It also contains a derived `recommendedAction` (`NONE`, `WAIT_FOR_RECONCILIATION`, `WAIT_AND_RECONCILE`, `REBUILD_FROM_LIVE_STATE`, `RECONCILE_CANONICAL_STATE`, or `MANUAL_REVIEW`) so applications can react without giving CellFlow custody or transaction-signing authority.
+The public response contains a derived `status` plus independent `submissionStatus`, `chainStatus`, and `workflowStatus`. This prevents RPC observations such as `UNKNOWN` from being confused with broadcast outcome or durable workflow state. It also contains a derived `recommendedAction` (`NONE`, `WAIT_FOR_RECONCILIATION`, `WAIT_AND_RECONCILE`, `REBUILD_FROM_LIVE_STATE`, `RECOLLECT_WALLET_INPUTS`, `REBUILD_AND_RESIGN`, `RECONCILE_CANONICAL_STATE`, or `MANUAL_REVIEW`) so applications can react without giving CellFlow custody or transaction-signing authority.
 
 ## Evidence
 
-`GET /api/v1/intents/{intentId}/evidence` returns the lifecycle snapshot, append-only state events, `recommendedAction`, and deterministic hashes over the canonical JSON representation. `snapshotSha256` includes export metadata such as `generatedAt`; `contentSha256` excludes the export timestamp so unchanged project state has a stable content fingerprint. Evidence is an audit artifact, not a consensus proof.
+`GET /api/v1/intents/{intentId}/evidence` returns the lifecycle snapshot and `cellflow-evidence-v2` attempt history, append-only state events, `recommendedAction`, and deterministic hashes over the canonical JSON representation. `snapshotSha256` includes export metadata such as `generatedAt`; `contentSha256` excludes the export timestamp so unchanged project state has a stable content fingerprint. Evidence is an audit artifact, not a consensus proof.
 
 ## Input preflight errors
 

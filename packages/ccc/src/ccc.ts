@@ -1,5 +1,5 @@
 import { ccc } from "@ckb-ccc/core";
-import type { OutPointRef, SubmissionFailureEvidence } from "@cellflow/core";
+import type { AttemptKind, InputRef, OutPointRef, SubmissionFailureEvidence } from "@cellflow/core";
 import { CellFlowClient } from "./client.ts";
 import { classifyBroadcastError } from "./broadcast-errors.ts";
 
@@ -47,12 +47,17 @@ export interface PrepareTrackedTransactionOptions {
   intentId: string;
   metadata?: Record<string, unknown>;
   expectedCells?: unknown[];
+  /** Inputs owned by application state before CCC adds wallet/funding capacity. */
+  applicationInputs?: OutPointRef[];
+  attemptKind?: AttemptKind;
+  parentAttemptId?: string | null;
 }
 
 export interface PreparedTrackedTransaction {
   transaction: ccc.Transaction;
   txHash: ccc.Hex;
   inputOutPoints: OutPointRef[];
+  inputRefs: InputRef[];
   broadcast(): Promise<ccc.Hex>;
 }
 
@@ -86,9 +91,38 @@ export function extractInputOutPoints(transaction: ccc.Transaction): OutPointRef
   });
 }
 
+function outPointKey(outPoint: OutPointRef): string {
+  return `${outPoint.txHash.toLowerCase()}:${outPoint.index}`;
+}
+
+export function classifyInputRefs(
+  inputOutPoints: OutPointRef[],
+  applicationInputs: OutPointRef[] = [],
+  originalInputs: OutPointRef[] = [],
+): InputRef[] {
+  const application = new Set(applicationInputs.map(outPointKey));
+  const original = new Set(originalInputs.map(outPointKey));
+  return inputOutPoints.map((outPoint) => {
+    const key = outPointKey(outPoint);
+    return {
+      outPoint,
+      role: application.has(key)
+        ? "APPLICATION_STATE"
+        : original.has(key)
+          ? "OTHER"
+          : "WALLET_FUNDING",
+    };
+  });
+}
+
 export async function prepareTrackedTransaction(
   options: PrepareTrackedTransactionOptions,
 ): Promise<PreparedTrackedTransaction> {
+  // Capture inputs that existed before the signer preparation flow. Inputs added
+  // by CCC afterwards are wallet/funding inputs; pre-existing inputs remain OTHER
+  // unless the caller explicitly marks them as application state.
+  const originalInputs = extractInputOutPoints(options.transaction);
+
   // signTransaction performs the signer preparation flow itself. Calling
   // prepareTransaction first and then signTransaction can prepare twice.
   const signed = await options.signer.signTransaction(options.transaction);
@@ -97,19 +131,28 @@ export async function prepareTrackedTransaction(
   // submission ambiguity from an input race.
   const txHash = signed.hash();
   const inputOutPoints = extractInputOutPoints(signed);
+  const inputRefs = classifyInputRefs(
+    inputOutPoints,
+    options.applicationInputs ?? [],
+    originalInputs,
+  );
 
   await options.flow.prepare({
     intentId: options.intentId,
     txHash,
     inputOutPoints,
+    inputRefs,
     metadata: options.metadata ?? {},
     expectedCells: options.expectedCells ?? [],
+    ...(options.attemptKind ? { attemptKind: options.attemptKind } : {}),
+    ...(options.parentAttemptId !== undefined ? { parentAttemptId: options.parentAttemptId } : {}),
   });
 
   return {
     transaction: signed,
     txHash,
     inputOutPoints,
+    inputRefs,
     async broadcast(): Promise<ccc.Hex> {
       // Fail closed before broadcast if any persisted input is stale, already
       // consumed, or currently unavailable under tx-pool-aware inspection.

@@ -1,10 +1,13 @@
 import type {
+  AttemptDisposition,
+  AttemptKind,
   ChainStatus,
   ConflictType,
   ConfirmationPolicy,
   ExecutionSnapshot,
   SubmissionErrorType,
   SubmissionStatus,
+  InputRef,
   OutPointRef,
   WorkflowStatus,
 } from "@cellflow/core";
@@ -47,6 +50,8 @@ export interface IntentRecord {
   intentId: string;
   metadata: Record<string, unknown>;
   expectedCells: unknown[];
+  activeAttemptId: string | null;
+  winningAttemptId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -57,6 +62,7 @@ export interface ExecutionRecord {
   intentRowId: string;
   txHash: string | null;
   inputOutPoints: OutPointRef[];
+  inputRefs: InputRef[];
   network: string;
   submissionStatus: SubmissionStatus;
   chainStatus: ChainStatus;
@@ -87,9 +93,35 @@ export interface ExecutionRecord {
   updatedAt: string;
 }
 
+export interface TransactionAttemptRecord {
+  id: string;
+  projectId: string;
+  intentRowId: string;
+  attemptNumber: number;
+  txHash: string;
+  parentAttemptId: string | null;
+  attemptKind: AttemptKind;
+  disposition: AttemptDisposition;
+  inputOutPoints: OutPointRef[];
+  inputRefs: InputRef[];
+  submissionStatus: SubmissionStatus;
+  chainStatus: ChainStatus;
+  workflowStatus: WorkflowStatus;
+  submissionErrorCode: string | null;
+  submissionErrorType: SubmissionErrorType | null;
+  submissionErrorDetails: unknown;
+  conflictType: ConflictType | null;
+  conflictDetails: unknown;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface IntentAggregate {
   intent: IntentRecord;
   execution: ExecutionRecord;
+  attempts: TransactionAttemptRecord[];
+  activeAttempt: TransactionAttemptRecord | null;
+  winningAttempt: TransactionAttemptRecord | null;
 }
 
 

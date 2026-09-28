@@ -2,7 +2,7 @@ import http from "node:http";
 import https from "node:https";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { CellFlowError, type ChainObservation, type OutPointRef } from "@cellflow/core";
+import { CellFlowError, type ChainObservation, type InputRef, type OutPointRef } from "@cellflow/core";
 
 export interface RpcTransactionStatus {
   status: "pending" | "proposed" | "committed" | "unknown" | "rejected";
@@ -58,7 +58,9 @@ export type InputInspectionState =
   | "UNKNOWN";
 
 export interface InputObservation {
+  /** Backward-compatible convenience field. */
   outPoint: OutPointRef;
+  input: InputRef;
   canonical: CanonicalInputState;
   poolAware: PoolInputState;
   canonicalRpcStatus: string | null;
@@ -72,6 +74,9 @@ export interface InputObservation {
 export interface InputInspection {
   state: InputInspectionState;
   inputs: InputObservation[];
+  spentInputs: InputObservation[];
+  contendedInputs: InputObservation[];
+  unknownInputs: InputObservation[];
   endpoint: string;
   observedAt: string;
   tipBlockNumber: string | null;
@@ -390,7 +395,7 @@ export class CkbRpcClient {
   }
 
   async inspectInputOutPoints(
-    inputOutPoints: OutPointRef[],
+    inputOutPoints: Array<OutPointRef | InputRef>,
     expectedIdentity: RpcIdentityExpectation = {},
   ): Promise<InputInspection> {
     return this.withSession(async (session) => {
@@ -401,7 +406,7 @@ export class CkbRpcClient {
 
   async inspectInputOutPointsAt(
     endpoint: string,
-    inputOutPoints: OutPointRef[],
+    inputOutPoints: Array<OutPointRef | InputRef>,
     expectedIdentity: RpcIdentityExpectation = {},
   ): Promise<InputInspection> {
     if (!this.urls.includes(endpoint)) {
@@ -416,7 +421,7 @@ export class CkbRpcClient {
     txHash: string,
     prior?: { blockHash: string; blockNumber: string },
     expectedIdentity: RpcIdentityExpectation = {},
-    inputOutPoints: OutPointRef[] = [],
+    inputOutPoints: Array<OutPointRef | InputRef> = [],
   ): Promise<RpcObservationBundle> {
     return this.withSession(async (session) => {
       // Validate the exact endpoint selected by failover before trusting chain
@@ -583,14 +588,21 @@ async function creatorCanonicalEvidence(
   };
 }
 
+function asInputRef(value: OutPointRef | InputRef): InputRef {
+  if ("outPoint" in value) return value;
+  return { outPoint: value, role: "OTHER" };
+}
+
 async function inspectInputOutPointsOnSession(
   session: RpcEndpointSession,
-  inputOutPoints: OutPointRef[],
+  inputOutPoints: Array<OutPointRef | InputRef>,
 ): Promise<InputInspection> {
   const observedAt = new Date().toISOString();
   const inputs: InputObservation[] = [];
 
-  for (const outPoint of inputOutPoints) {
+  for (const target of inputOutPoints) {
+    const input = asInputRef(target);
+    const outPoint = input.outPoint;
     const canonicalResult = await session.call<RpcLiveCellResult | null>(
       "get_live_cell",
       liveCellParams(outPoint, false),
@@ -626,6 +638,7 @@ async function inspectInputOutPointsOnSession(
 
     inputs.push({
       outPoint,
+      input,
       canonical,
       poolAware,
       canonicalRpcStatus,
@@ -639,15 +652,29 @@ async function inspectInputOutPointsOnSession(
 
   const tip = await session.call<Record<string, unknown>>("get_tip_header", []);
   const tipBlockNumber = headerNumber(tip) ?? null;
-  const state: InputInspectionState = inputs.some((item) => item.canonical === "SPENT")
+  const spentInputs = inputs.filter((item) => item.canonical === "SPENT");
+  const unknownInputs = inputs.filter((item) => item.canonical === "UNKNOWN");
+  const contendedInputs = inputs.filter(
+    (item) => item.canonical === "LIVE" && item.poolAware === "UNAVAILABLE",
+  );
+  const state: InputInspectionState = spentInputs.length > 0
     ? "CANONICALLY_SPENT"
-    : inputs.some((item) => item.canonical === "UNKNOWN")
+    : unknownInputs.length > 0
       ? "UNKNOWN"
-      : inputs.some((item) => item.poolAware === "UNAVAILABLE")
+      : contendedInputs.length > 0
         ? "MEMPOOL_CONTENDED"
         : "ALL_LIVE";
 
-  return { state, inputs, endpoint: session.url, observedAt, tipBlockNumber };
+  return {
+    state,
+    inputs,
+    spentInputs,
+    contendedInputs,
+    unknownInputs,
+    endpoint: session.url,
+    observedAt,
+    tipBlockNumber,
+  };
 }
 
 export async function observeTransaction(
@@ -655,7 +682,7 @@ export async function observeTransaction(
   txHash: string,
   prior?: { blockHash: string; blockNumber: string },
   expectedIdentity: RpcIdentityExpectation = {},
-  inputOutPoints: OutPointRef[] = [],
+  inputOutPoints: Array<OutPointRef | InputRef> = [],
 ): Promise<RpcObservationBundle> {
   return client.observe(txHash, prior, expectedIdentity, inputOutPoints);
 }

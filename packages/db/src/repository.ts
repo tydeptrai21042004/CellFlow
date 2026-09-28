@@ -3,9 +3,12 @@ import type { Sql, TransactionSql } from "postgres";
 import {
   deriveOverallStatus,
   deriveRecommendedAction,
+  type AttemptDisposition,
+  type AttemptKind,
   type ConflictType,
   type ConfirmationPolicy,
   type ExecutionSnapshot,
+  type InputRef,
   type OutPointRef,
   type SubmissionErrorType,
 } from "@cellflow/core";
@@ -23,6 +26,7 @@ import type {
   OperationalHealthRecord,
   ProjectRecord,
   StateEventRecord,
+  TransactionAttemptRecord,
   WebhookDeliveryRecord,
   WebhookEndpointRecord,
 } from "./types.ts";
@@ -65,6 +69,8 @@ function mapIntent(row: Record<string, unknown>): IntentRecord {
     intentId: String(row.intent_id),
     metadata: (row.metadata ?? {}) as Record<string, unknown>,
     expectedCells: (row.expected_cells ?? []) as unknown[],
+    activeAttemptId: row.active_attempt_id ? String(row.active_attempt_id) : null,
+    winningAttemptId: row.winning_attempt_id ? String(row.winning_attempt_id) : null,
     createdAt: iso(row.created_at as Date | string),
     updatedAt: iso(row.updated_at as Date | string),
   };
@@ -77,6 +83,7 @@ function mapExecution(row: Record<string, unknown>): ExecutionRecord {
     intentRowId: String(row.intent_row_id),
     txHash: row.tx_hash ? String(row.tx_hash) : null,
     inputOutPoints: (row.input_out_points ?? []) as OutPointRef[],
+    inputRefs: (row.input_refs ?? []) as InputRef[],
     network: String(row.network),
     submissionStatus: row.submission_status as ExecutionRecord["submissionStatus"],
     chainStatus: row.chain_status as ExecutionRecord["chainStatus"],
@@ -106,6 +113,50 @@ function mapExecution(row: Record<string, unknown>): ExecutionRecord {
     createdAt: iso(row.created_at as Date | string),
     updatedAt: iso(row.updated_at as Date | string),
   };
+}
+
+
+function mapAttempt(row: Record<string, unknown>): TransactionAttemptRecord {
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    intentRowId: String(row.intent_row_id),
+    attemptNumber: Number(row.attempt_number),
+    txHash: String(row.tx_hash),
+    parentAttemptId: row.parent_attempt_id ? String(row.parent_attempt_id) : null,
+    attemptKind: row.attempt_kind as AttemptKind,
+    disposition: row.disposition as AttemptDisposition,
+    inputOutPoints: (row.input_out_points ?? []) as OutPointRef[],
+    inputRefs: (row.input_refs ?? []) as InputRef[],
+    submissionStatus: row.submission_status as TransactionAttemptRecord["submissionStatus"],
+    chainStatus: row.chain_status as TransactionAttemptRecord["chainStatus"],
+    workflowStatus: row.workflow_status as TransactionAttemptRecord["workflowStatus"],
+    submissionErrorCode: row.submission_error_code ? String(row.submission_error_code) : null,
+    submissionErrorType: row.submission_error_type ? row.submission_error_type as SubmissionErrorType : null,
+    submissionErrorDetails: row.submission_error_details ?? null,
+    conflictType: row.conflict_type ? row.conflict_type as ConflictType : null,
+    conflictDetails: row.conflict_details ?? null,
+    createdAt: iso(row.created_at as Date | string),
+    updatedAt: iso(row.updated_at as Date | string),
+  };
+}
+
+function neutralInputRefs(outPoints: OutPointRef[]): InputRef[] {
+  return outPoints.map((outPoint) => ({ outPoint, role: "OTHER" }));
+}
+
+function priorAttemptDisposition(execution: ExecutionRecord): AttemptDisposition {
+  if (execution.workflowStatus === "CONFIRMED") return "CONFIRMED";
+  if (execution.workflowStatus === "CONFLICTED") return "CONFLICTED";
+  if (execution.chainStatus === "REJECTED" || execution.submissionStatus === "NODE_REJECTED") return "REJECTED";
+  return "SUPERSEDED";
+}
+
+function dispositionForSnapshot(snapshot: ExecutionSnapshot): AttemptDisposition {
+  if (snapshot.workflowStatus === "CONFIRMED") return "CONFIRMED";
+  if (snapshot.workflowStatus === "CONFLICTED") return "CONFLICTED";
+  if (snapshot.chainStatus === "REJECTED" || snapshot.submissionStatus === "NODE_REJECTED") return "REJECTED";
+  return "ACTIVE";
 }
 
 function webhookEventType(kind: string, status: string): string {
@@ -408,6 +459,7 @@ export class CellFlowRepository {
       select
         i.id as i_id, i.project_id as i_project_id, i.intent_id as i_intent_id,
         i.metadata as i_metadata, i.expected_cells as i_expected_cells,
+        i.active_attempt_id as i_active_attempt_id, i.winning_attempt_id as i_winning_attempt_id,
         i.created_at as i_created_at, i.updated_at as i_updated_at,
         e.*
       from intents i join executions e on e.intent_row_id = i.id
@@ -416,13 +468,28 @@ export class CellFlowRepository {
     `;
     const row = rows[0];
     if (!row) return null;
+    const attemptRows = await this.sql`
+      select * from transaction_attempts
+      where project_id = ${projectId} and intent_row_id = ${String(row.i_id)}
+      order by attempt_number asc
+    `;
+    const attempts = attemptRows.map((attempt) => mapAttempt(attempt));
+    const intent = mapIntent({
+      id: row.i_id, project_id: row.i_project_id, intent_id: row.i_intent_id,
+      metadata: row.i_metadata, expected_cells: row.i_expected_cells,
+      active_attempt_id: row.i_active_attempt_id, winning_attempt_id: row.i_winning_attempt_id,
+      created_at: row.i_created_at, updated_at: row.i_updated_at,
+    });
     return {
-      intent: mapIntent({
-        id: row.i_id, project_id: row.i_project_id, intent_id: row.i_intent_id,
-        metadata: row.i_metadata, expected_cells: row.i_expected_cells,
-        created_at: row.i_created_at, updated_at: row.i_updated_at,
-      }),
+      intent,
       execution: mapExecution(row),
+      attempts,
+      activeAttempt: intent.activeAttemptId
+        ? attempts.find((attempt) => attempt.id === intent.activeAttemptId) ?? null
+        : null,
+      winningAttempt: intent.winningAttemptId
+        ? attempts.find((attempt) => attempt.id === intent.winningAttemptId) ?? null
+        : null,
     };
   }
 
@@ -508,6 +575,7 @@ export class CellFlowRepository {
           select
             i.id as i_id, i.project_id as i_project_id, i.intent_id as i_intent_id,
             i.metadata as i_metadata, i.expected_cells as i_expected_cells,
+            i.active_attempt_id as i_active_attempt_id, i.winning_attempt_id as i_winning_attempt_id,
             i.created_at as i_created_at, i.updated_at as i_updated_at,
             e.*
           from intents i join executions e on e.intent_row_id = i.id
@@ -520,6 +588,7 @@ export class CellFlowRepository {
           select
             i.id as i_id, i.project_id as i_project_id, i.intent_id as i_intent_id,
             i.metadata as i_metadata, i.expected_cells as i_expected_cells,
+            i.active_attempt_id as i_active_attempt_id, i.winning_attempt_id as i_winning_attempt_id,
             i.created_at as i_created_at, i.updated_at as i_updated_at,
             e.*
           from intents i join executions e on e.intent_row_id = i.id
@@ -533,9 +602,13 @@ export class CellFlowRepository {
       intent: mapIntent({
         id: row.i_id, project_id: row.i_project_id, intent_id: row.i_intent_id,
         metadata: row.i_metadata, expected_cells: row.i_expected_cells,
+        active_attempt_id: row.i_active_attempt_id, winning_attempt_id: row.i_winning_attempt_id,
         created_at: row.i_created_at, updated_at: row.i_updated_at,
       }),
       execution: mapExecution(row),
+      attempts: [],
+      activeAttempt: null,
+      winningAttempt: null,
     }));
     const last = items.at(-1);
     return {
@@ -553,38 +626,169 @@ export class CellFlowRepository {
     txHash: string;
     submissionStatus: ExecutionRecord["submissionStatus"];
     inputOutPoints?: OutPointRef[];
+    inputRefs?: InputRef[];
+    attemptKind?: AttemptKind;
+    parentAttemptId?: string | null;
     nextReconcileAt?: Date | null;
     fromStatus: string;
     toStatus: string;
     reason: string;
   }): Promise<IntentAggregate> {
-    if (input.aggregate.execution.txHash && input.aggregate.execution.txHash !== input.txHash) {
-      throw new Error("INTENT_TX_CONFLICT");
+    const currentHash = input.aggregate.execution.txHash;
+    const sameHash = currentHash === input.txHash;
+    const creatingAttempt = !sameHash;
+    const attemptKind: AttemptKind = input.attemptKind ?? (currentHash ? "REBUILD" : "INITIAL");
+
+    if (creatingAttempt && currentHash) {
+      if (attemptKind === "INITIAL") throw new Error("ATTEMPT_KIND_INVALID");
+      const potentiallyLive =
+        input.aggregate.execution.submissionStatus === "BROADCASTING" ||
+        input.aggregate.execution.submissionStatus === "SUBMISSION_UNKNOWN" ||
+        input.aggregate.execution.submissionStatus === "SUBMITTED" ||
+        input.aggregate.execution.chainStatus === "PENDING" ||
+        input.aggregate.execution.chainStatus === "PROPOSED" ||
+        input.aggregate.execution.chainStatus === "COMMITTED";
+      if (potentiallyLive) {
+        // CellFlow does not abandon an attempt that may still commit. RBF behavior
+        // is observed/reconciled from chain/pool evidence rather than initiated
+        // by replacing the active attempt before its outcome is known.
+        throw new Error("UNSAFE_ATTEMPT_REPLACEMENT");
+      }
     }
+
     const persistedInputs = input.inputOutPoints && input.inputOutPoints.length > 0
       ? input.inputOutPoints
-      : input.aggregate.execution.inputOutPoints;
+      : sameHash
+        ? input.aggregate.execution.inputOutPoints
+        : [];
+    const persistedInputRefs = input.inputRefs && input.inputRefs.length > 0
+      ? input.inputRefs
+      : persistedInputs.length > 0
+        ? neutralInputRefs(persistedInputs)
+        : sameHash
+          ? input.aggregate.execution.inputRefs
+          : [];
+
     await this.sql.begin(async (tx) => {
-      const updated = await tx`
-        update executions
-        set tx_hash = ${input.txHash}, submission_status = ${input.submissionStatus},
-            input_out_points = ${tx.json(toJsonValue(persistedInputs))},
-            next_reconcile_at = ${input.nextReconcileAt ?? null}, version = version + 1, updated_at = now()
-        where id = ${input.aggregate.execution.id}
-          and project_id = ${input.aggregate.intent.projectId}
-          and version = ${input.aggregate.execution.version}
-        returning *
+      const hashOwner = await tx`
+        select id, intent_row_id, input_out_points, input_refs
+        from transaction_attempts
+        where project_id = ${input.aggregate.intent.projectId} and tx_hash = ${input.txHash}
+        limit 1
       `;
+      const existingAttempt = hashOwner[0];
+      if (existingAttempt && String(existingAttempt.intent_row_id) !== input.aggregate.intent.id) {
+        throw new Error("TX_HASH_CONFLICT");
+      }
+      if (existingAttempt && persistedInputs.length > 0 &&
+          JSON.stringify(existingAttempt.input_out_points ?? []) !== JSON.stringify(persistedInputs)) {
+        throw new Error("ATTEMPT_INPUT_CONFLICT");
+      }
+      if (existingAttempt && persistedInputRefs.length > 0 &&
+          JSON.stringify(existingAttempt.input_refs ?? []) !== JSON.stringify(persistedInputRefs)) {
+        throw new Error("ATTEMPT_INPUT_CONFLICT");
+      }
+
+      let attemptId = existingAttempt ? String(existingAttempt.id) : null;
+      let attemptNumber = input.aggregate.attempts.at(-1)?.attemptNumber ?? 0;
+      if (!attemptId) {
+        const numberRows = await tx`
+          select coalesce(max(attempt_number), 0)::int as max_number
+          from transaction_attempts
+          where intent_row_id = ${input.aggregate.intent.id}
+        `;
+        attemptNumber = Number(numberRows[0]?.max_number ?? 0) + 1;
+        attemptId = randomUUID();
+
+        const parentAttemptId = input.parentAttemptId ?? input.aggregate.intent.activeAttemptId ?? null;
+        if (parentAttemptId) {
+          const parentRows = await tx`
+            select id from transaction_attempts
+            where id = ${parentAttemptId} and intent_row_id = ${input.aggregate.intent.id}
+            limit 1
+          `;
+          if (parentRows.length !== 1) throw new Error("ATTEMPT_PARENT_CONFLICT");
+        }
+
+        if (input.aggregate.intent.activeAttemptId) {
+          await tx`
+            update transaction_attempts
+            set disposition = ${priorAttemptDisposition(input.aggregate.execution)}, updated_at = now()
+            where id = ${input.aggregate.intent.activeAttemptId}
+              and intent_row_id = ${input.aggregate.intent.id}
+          `;
+        }
+
+        await tx`
+          insert into transaction_attempts (
+            id, project_id, intent_row_id, attempt_number, tx_hash, parent_attempt_id,
+            attempt_kind, disposition, input_out_points, input_refs,
+            submission_status, chain_status, workflow_status
+          ) values (
+            ${attemptId}, ${input.aggregate.intent.projectId}, ${input.aggregate.intent.id},
+            ${attemptNumber}, ${input.txHash}, ${parentAttemptId}, ${attemptKind}, 'ACTIVE',
+            ${tx.json(toJsonValue(persistedInputs))}, ${tx.json(toJsonValue(persistedInputRefs))},
+            ${input.submissionStatus}, 'UNOBSERVED', 'IDLE'
+          )
+        `;
+      } else {
+        await tx`
+          update transaction_attempts
+          set submission_status = ${input.submissionStatus},
+              input_out_points = ${tx.json(toJsonValue(persistedInputs))},
+              input_refs = ${tx.json(toJsonValue(persistedInputRefs))},
+              updated_at = now()
+          where id = ${attemptId}
+        `;
+      }
+
+      const updated = creatingAttempt
+        ? await tx`
+            update executions
+            set tx_hash = ${input.txHash}, submission_status = ${input.submissionStatus},
+                input_out_points = ${tx.json(toJsonValue(persistedInputs))},
+                input_refs = ${tx.json(toJsonValue(persistedInputRefs))},
+                chain_status = 'UNOBSERVED', workflow_status = 'IDLE', confirmation_count = 0,
+                committed_block_hash = null, committed_block_number = null, rejection_reason = null,
+                submission_error_code = null, submission_error_type = null, submission_error_details = null,
+                conflict_type = null, conflict_details = null, assertion_status = null, assertion_result = null,
+                last_raw_observation = null, last_observed_at = null, reconcile_attempts = 0,
+                next_reconcile_at = ${input.nextReconcileAt ?? null}, version = version + 1, updated_at = now()
+            where id = ${input.aggregate.execution.id}
+              and project_id = ${input.aggregate.intent.projectId}
+              and version = ${input.aggregate.execution.version}
+            returning *
+          `
+        : await tx`
+            update executions
+            set tx_hash = ${input.txHash}, submission_status = ${input.submissionStatus},
+                input_out_points = ${tx.json(toJsonValue(persistedInputs))},
+                input_refs = ${tx.json(toJsonValue(persistedInputRefs))},
+                next_reconcile_at = ${input.nextReconcileAt ?? null}, version = version + 1, updated_at = now()
+            where id = ${input.aggregate.execution.id}
+              and project_id = ${input.aggregate.intent.projectId}
+              and version = ${input.aggregate.execution.version}
+            returning *
+          `;
       const row = updated[0];
       if (!row) throw new OptimisticConcurrencyError();
+
+      await tx`
+        update intents
+        set active_attempt_id = ${attemptId},
+            winning_attempt_id = ${creatingAttempt ? null : input.aggregate.intent.winningAttemptId},
+            updated_at = now()
+        where id = ${input.aggregate.intent.id}
+      `;
+
       const snapshot: ExecutionSnapshot = {
         submissionStatus: input.submissionStatus,
-        chainStatus: input.aggregate.execution.chainStatus,
-        workflowStatus: input.aggregate.execution.workflowStatus,
+        chainStatus: creatingAttempt ? "UNOBSERVED" : input.aggregate.execution.chainStatus,
+        workflowStatus: creatingAttempt ? "IDLE" : input.aggregate.execution.workflowStatus,
         confirmationPolicy: input.aggregate.execution.confirmationPolicy,
-        confirmationCount: input.aggregate.execution.confirmationCount,
-        ...(input.aggregate.execution.committedBlockHash ? { committedBlockHash: input.aggregate.execution.committedBlockHash } : {}),
-        ...(input.aggregate.execution.committedBlockNumber ? { committedBlockNumber: input.aggregate.execution.committedBlockNumber } : {}),
+        confirmationCount: creatingAttempt ? 0 : input.aggregate.execution.confirmationCount,
+        ...(!creatingAttempt && input.aggregate.execution.committedBlockHash ? { committedBlockHash: input.aggregate.execution.committedBlockHash } : {}),
+        ...(!creatingAttempt && input.aggregate.execution.committedBlockNumber ? { committedBlockNumber: input.aggregate.execution.committedBlockNumber } : {}),
       };
       await this.insertEventAndOutbox(tx, {
         projectId: input.aggregate.intent.projectId,
@@ -592,16 +796,21 @@ export class CellFlowRepository {
         executionId: input.aggregate.execution.id,
         intentId: input.aggregate.intent.intentId,
         txHash: input.txHash,
-        kind: "SUBMISSION_UPDATED",
+        kind: creatingAttempt && currentHash ? "TRANSACTION_ATTEMPT_CREATED" : "SUBMISSION_UPDATED",
         fromStatus: input.fromStatus,
         toStatus: input.toStatus,
         reason: input.reason,
-        rawObservation: persistedInputs.length > 0 ? { inputOutPoints: persistedInputs } : undefined,
+        rawObservation: {
+          attemptId,
+          attemptNumber,
+          attemptKind,
+          inputOutPoints: persistedInputs,
+          inputRefs: persistedInputRefs,
+        },
         occurredAt: new Date(),
         snapshot,
-        assertionStatus: input.aggregate.execution.assertionStatus,
+        assertionStatus: creatingAttempt ? null : input.aggregate.execution.assertionStatus,
       });
-      await tx`update intents set updated_at = now() where id = ${input.aggregate.intent.id}`;
     });
     const result = await this.getIntent(input.aggregate.intent.projectId, input.aggregate.intent.intentId);
     if (!result) throw new Error("Intent disappeared after transaction attach");
@@ -640,6 +849,23 @@ export class CellFlowRepository {
         returning id
       `;
       if (updated.length !== 1) throw new OptimisticConcurrencyError();
+      if (input.aggregate.intent.activeAttemptId) {
+        await tx`
+          update transaction_attempts
+          set submission_status = ${input.status},
+              submission_error_code = ${input.submissionErrorCode ?? null},
+              submission_error_type = ${input.submissionErrorType ?? null},
+              submission_error_details = ${input.submissionErrorDetails === undefined ? null : tx.json(toJsonValue(input.submissionErrorDetails))},
+              conflict_type = ${input.conflictType ?? input.aggregate.execution.conflictType},
+              conflict_details = ${input.conflictDetails === undefined
+                ? input.aggregate.execution.conflictDetails === null ? null : tx.json(toJsonValue(input.aggregate.execution.conflictDetails))
+                : tx.json(toJsonValue(input.conflictDetails))},
+              disposition = ${input.status === "NODE_REJECTED" ? "REJECTED" : "ACTIVE"},
+              updated_at = now()
+          where id = ${input.aggregate.intent.activeAttemptId}
+            and intent_row_id = ${input.aggregate.intent.id}
+        `;
+      }
       const snapshot: ExecutionSnapshot = {
         submissionStatus: input.status,
         chainStatus: input.aggregate.execution.chainStatus,
@@ -738,7 +964,29 @@ export class CellFlowRepository {
         returning id
       `;
       if (updated.length !== 1) throw new OptimisticConcurrencyError();
-      await tx`update intents set updated_at = now() where id = ${input.aggregate.intent.id}`;
+      const attemptDisposition = dispositionForSnapshot(input.snapshot);
+      if (input.aggregate.intent.activeAttemptId) {
+        await tx`
+          update transaction_attempts
+          set submission_status = ${input.snapshot.submissionStatus},
+              chain_status = ${input.snapshot.chainStatus},
+              workflow_status = ${input.snapshot.workflowStatus},
+              disposition = ${attemptDisposition},
+              conflict_type = ${nextConflictType},
+              conflict_details = ${nextConflictDetails === null ? null : tx.json(toJsonValue(nextConflictDetails))},
+              updated_at = now()
+          where id = ${input.aggregate.intent.activeAttemptId}
+            and intent_row_id = ${input.aggregate.intent.id}
+        `;
+      }
+      await tx`
+        update intents
+        set updated_at = now(),
+            winning_attempt_id = ${attemptDisposition === "CONFIRMED"
+              ? input.aggregate.intent.activeAttemptId
+              : input.aggregate.intent.winningAttemptId}
+        where id = ${input.aggregate.intent.id}
+      `;
       if (!meaningful) return null;
       return this.insertEventAndOutbox(tx, {
         projectId: input.aggregate.intent.projectId,
@@ -1186,6 +1434,25 @@ export class CellFlowRepository {
       metadata: aggregate.intent.metadata,
       txHash: aggregate.execution.txHash,
       inputOutPoints: aggregate.execution.inputOutPoints,
+      inputRefs: aggregate.execution.inputRefs,
+      activeAttemptId: aggregate.intent.activeAttemptId,
+      winningAttemptId: aggregate.intent.winningAttemptId,
+      attempts: aggregate.attempts.map((attempt) => ({
+        id: attempt.id,
+        attemptNumber: attempt.attemptNumber,
+        txHash: attempt.txHash,
+        parentAttemptId: attempt.parentAttemptId,
+        attemptKind: attempt.attemptKind,
+        disposition: attempt.disposition,
+        submissionStatus: attempt.submissionStatus,
+        chainStatus: attempt.chainStatus,
+        workflowStatus: attempt.workflowStatus,
+        inputRefs: attempt.inputRefs,
+        conflictType: attempt.conflictType,
+        conflictDetails: attempt.conflictDetails,
+        createdAt: attempt.createdAt,
+        updatedAt: attempt.updatedAt,
+      })),
       status: deriveOverallStatus(snapshot),
       submissionStatus: snapshot.submissionStatus,
       chainStatus: snapshot.chainStatus,
@@ -1205,6 +1472,7 @@ export class CellFlowRepository {
         snapshot,
         aggregate.execution.conflictType,
         aggregate.execution.assertionStatus,
+        aggregate.execution.conflictDetails,
       ),
       workflowRunId: aggregate.execution.workflowRunId,
       createdAt: aggregate.intent.createdAt,

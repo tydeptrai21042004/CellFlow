@@ -9,6 +9,7 @@ import type {
   SubmissionStatus,
   WorkflowStatus,
   ConflictType,
+  ConflictDomain,
 } from "./types.ts";
 
 export function parseHexBlockNumber(value: string | undefined): bigint | undefined {
@@ -59,13 +60,26 @@ export function deriveOverallStatus(snapshot: ExecutionSnapshot): OverallStatus 
   return "CREATED";
 }
 
+function conflictDomainFromDetails(details: unknown): ConflictDomain {
+  if (!details || typeof details !== "object" || Array.isArray(details)) return "UNKNOWN";
+  const value = (details as Record<string, unknown>).inputDomain;
+  return value === "APPLICATION" || value === "WALLET" || value === "MIXED" ? value : "UNKNOWN";
+}
+
 export function deriveRecommendedAction(
   snapshot: ExecutionSnapshot,
   conflictType: ConflictType | null = null,
   assertionStatus: string | null = null,
+  conflictDetails: unknown = null,
 ): RecommendedAction {
   if (snapshot.workflowStatus === "CONFIRMED") return "NONE";
-  if (conflictType === "INPUT_SPENT") return "REBUILD_FROM_LIVE_STATE";
+  if (conflictType === "INPUT_SPENT") {
+    const domain = conflictDomainFromDetails(conflictDetails);
+    if (domain === "WALLET") return "RECOLLECT_WALLET_INPUTS";
+    if (domain === "MIXED") return "REBUILD_AND_RESIGN";
+    if (domain === "APPLICATION") return "REBUILD_FROM_LIVE_STATE";
+    return "MANUAL_REVIEW";
+  }
   if (snapshot.workflowStatus === "REORGED" || conflictType === "REORG_CONFLICT") {
     return "RECONCILE_CANONICAL_STATE";
   }

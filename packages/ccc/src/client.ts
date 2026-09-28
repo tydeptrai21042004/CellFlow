@@ -1,5 +1,7 @@
 import type {
+  AttemptKind,
   ConflictType,
+  InputRef,
   OutPointRef,
   SubmissionErrorType,
   SubmissionFailureEvidence,
@@ -19,12 +21,19 @@ export interface TrackInput {
 
 export interface PrepareInput extends TrackInput {
   inputOutPoints?: OutPointRef[];
+  inputRefs?: InputRef[];
+  attemptKind?: AttemptKind;
+  parentAttemptId?: string | null;
 }
 
 export interface IntentView {
   intentId: string;
   txHash: string | null;
   inputOutPoints: OutPointRef[];
+  inputRefs?: InputRef[];
+  activeAttemptId?: string | null;
+  winningAttemptId?: string | null;
+  attempts?: unknown[];
   status: string;
   submissionStatus: string;
   chainStatus: string;
@@ -111,6 +120,9 @@ export class CellFlowClient {
         body: JSON.stringify({
           txHash: input.txHash,
           inputOutPoints: input.inputOutPoints ?? [],
+          inputRefs: input.inputRefs ?? [],
+          ...(input.attemptKind ? { attemptKind: input.attemptKind } : {}),
+          ...(input.parentAttemptId !== undefined ? { parentAttemptId: input.parentAttemptId } : {}),
         }),
       },
     );

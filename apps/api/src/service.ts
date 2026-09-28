@@ -3,11 +3,15 @@ import {
   buildEvidence,
   CellFlowError,
   deriveOverallStatus,
+  initialSnapshot,
+  normalizeInputRefs,
   normalizeIntentId,
   normalizeOutPointRefs,
   normalizeTxHash,
   parseConfirmationPolicy,
   updateSubmission,
+  type AttemptKind,
+  type InputRef,
   type OutPointRef,
   type SubmissionFailureEvidence,
 } from "@cellflow/core";
@@ -286,44 +290,93 @@ export class CellFlowService {
     txHashInput: string,
     submissionStatus: "PREPARED" | "SUBMITTED",
     inputOutPoints?: OutPointRef[],
+    inputRefs?: InputRef[],
+    attemptKind?: AttemptKind,
+    parentAttemptId?: string | null,
   ): Promise<Record<string, unknown>> {
     const txHash = normalizeTxHash(txHashInput);
     const normalizedInputs = inputOutPoints === undefined ? undefined : normalizeOutPointRefs(inputOutPoints);
+    const normalizedInputRefs = inputRefs === undefined ? undefined : normalizeInputRefs(inputRefs);
+    if (normalizedInputRefs && normalizedInputs && normalizedInputRefs.length > 0 && normalizedInputs.length > 0) {
+      const refsOutPoints = normalizedInputRefs.map((ref) => ref.outPoint);
+      if (JSON.stringify(refsOutPoints) !== JSON.stringify(normalizedInputs)) {
+        throw new CellFlowError(
+          "INVALID_SIGNED_TRANSACTION",
+          "inputRefs and inputOutPoints must describe the same ordered transaction inputs",
+          400,
+        );
+      }
+    }
+
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const current = await this.getIntent(project, intentId);
-      if (current.execution.txHash && current.execution.txHash !== txHash) {
-        throw new CellFlowError("INTENT_CONFLICT", "Intent is already bound to a different transaction hash", 409);
-      }
-      if (
-        normalizedInputs && normalizedInputs.length > 0 &&
-        current.execution.inputOutPoints.length > 0 &&
-        JSON.stringify(current.execution.inputOutPoints) !== JSON.stringify(normalizedInputs)
-      ) {
+      const sameHash = current.execution.txHash === txHash;
+      const replacingHash = Boolean(current.execution.txHash && !sameHash);
+
+      if (sameHash && normalizedInputs && normalizedInputs.length > 0 &&
+          current.execution.inputOutPoints.length > 0 &&
+          JSON.stringify(current.execution.inputOutPoints) !== JSON.stringify(normalizedInputs)) {
         throw new CellFlowError(
           "INTENT_CONFLICT",
-          "Persisted input OutPoints do not match the existing evidence for this transaction hash",
+          "Persisted input OutPoints do not match the existing evidence for this transaction attempt",
           409,
         );
       }
+      if (sameHash && normalizedInputRefs && normalizedInputRefs.length > 0 &&
+          current.execution.inputRefs.length > 0 &&
+          JSON.stringify(current.execution.inputRefs) !== JSON.stringify(normalizedInputRefs)) {
+        throw new CellFlowError(
+          "INTENT_CONFLICT",
+          "Persisted semantic input roles do not match the existing evidence for this transaction attempt",
+          409,
+        );
+      }
+
       const before = snapshotFromExecution(current.execution);
-      const after = updateSubmission(before, submissionStatus);
+      const base = replacingHash
+        ? initialSnapshot(current.execution.confirmationPolicy)
+        : before;
+      const after = updateSubmission(base, submissionStatus);
+      const effectiveAttemptKind: AttemptKind = attemptKind ?? (replacingHash ? "REBUILD" : "INITIAL");
+
       try {
         const updated = await this.repository.attachTransaction({
           aggregate: current,
           txHash,
           submissionStatus,
           ...(normalizedInputs ? { inputOutPoints: normalizedInputs } : {}),
+          ...(normalizedInputRefs ? { inputRefs: normalizedInputRefs } : {}),
+          attemptKind: effectiveAttemptKind,
+          ...(parentAttemptId !== undefined ? { parentAttemptId } : {}),
           nextReconcileAt: submissionStatus === "SUBMITTED" ? new Date() : null,
           fromStatus: deriveOverallStatus(before),
           toStatus: deriveOverallStatus(after),
-          reason: submissionStatus === "PREPARED"
-            ? "Deterministic transaction hash persisted before broadcast"
-            : "Transaction hash registered for reconciliation",
+          reason: replacingHash
+            ? `New ${effectiveAttemptKind} transaction attempt persisted under the existing business intent`
+            : submissionStatus === "PREPARED"
+              ? "Deterministic transaction hash persisted before broadcast"
+              : "Transaction hash registered for reconciliation",
         });
         return this.repository.executionPublicView(updated);
       } catch (error) {
-        if (error instanceof Error && error.message === "INTENT_TX_CONFLICT") {
-          throw new CellFlowError("INTENT_CONFLICT", "Intent is already bound to a different transaction hash", 409);
+        if (error instanceof Error && error.message === "TX_HASH_CONFLICT") {
+          throw new CellFlowError("INTENT_CONFLICT", "Transaction hash already belongs to another CellFlow intent", 409);
+        }
+        if (error instanceof Error && error.message === "ATTEMPT_INPUT_CONFLICT") {
+          throw new CellFlowError("INTENT_CONFLICT", "Transaction attempt already exists with different input evidence", 409);
+        }
+        if (error instanceof Error && error.message === "ATTEMPT_PARENT_CONFLICT") {
+          throw new CellFlowError("INTENT_CONFLICT", "parentAttemptId does not belong to this intent", 409);
+        }
+        if (error instanceof Error && error.message === "ATTEMPT_KIND_INVALID") {
+          throw new CellFlowError("INTENT_CONFLICT", "A replacement transaction must use REBUILD, RBF_REPLACEMENT, or MANUAL_RETRY", 409);
+        }
+        if (error instanceof Error && error.message === "UNSAFE_ATTEMPT_REPLACEMENT") {
+          throw new CellFlowError(
+            "INTENT_CONFLICT",
+            "The current attempt may still commit; reconcile it to a terminal/recoverable state before preparing another signed attempt",
+            409,
+          );
         }
         if (!(error instanceof OptimisticConcurrencyError) || attempt === 2) throw error;
       }
@@ -336,7 +389,7 @@ export class CellFlowService {
     if (!aggregate.execution.txHash) {
       throw new CellFlowError("INVALID_TX_HASH", "Intent has no prepared transaction hash", 400);
     }
-    if (aggregate.execution.inputOutPoints.length === 0) {
+    if (aggregate.execution.inputOutPoints.length === 0 && aggregate.execution.inputRefs.length === 0) {
       throw new CellFlowError(
         "INVALID_SIGNED_TRANSACTION",
         "Input preflight requires the prepared transaction input OutPoints",
@@ -353,7 +406,10 @@ export class CellFlowService {
 
     let inspection: InputInspection;
     try {
-      inspection = await client.inspectInputOutPoints(aggregate.execution.inputOutPoints, {
+      const preflightInputs = aggregate.execution.inputRefs.length > 0
+        ? aggregate.execution.inputRefs
+        : aggregate.execution.inputOutPoints;
+      inspection = await client.inspectInputOutPoints(preflightInputs, {
         chain: expectedChainForNetwork(project.network),
         genesisHash: project.rpcGenesisHash ?? process.env.CKB_EXPECTED_GENESIS_HASH ?? null,
       });
@@ -512,6 +568,25 @@ export class CellFlowService {
       intentId: aggregate.intent.intentId,
       txHash: aggregate.execution.txHash,
       inputOutPoints: aggregate.execution.inputOutPoints,
+      inputRefs: aggregate.execution.inputRefs,
+      activeAttemptId: aggregate.intent.activeAttemptId,
+      winningAttemptId: aggregate.intent.winningAttemptId,
+      attempts: aggregate.attempts.map((attempt) => ({
+        id: attempt.id,
+        attemptNumber: attempt.attemptNumber,
+        txHash: attempt.txHash,
+        parentAttemptId: attempt.parentAttemptId,
+        attemptKind: attempt.attemptKind,
+        disposition: attempt.disposition,
+        inputRefs: attempt.inputRefs,
+        submissionStatus: attempt.submissionStatus,
+        chainStatus: attempt.chainStatus,
+        workflowStatus: attempt.workflowStatus,
+        conflictType: attempt.conflictType,
+        conflictDetails: attempt.conflictDetails,
+        createdAt: attempt.createdAt,
+        updatedAt: attempt.updatedAt,
+      })),
       network: aggregate.execution.network,
       snapshot: snapshotFromExecution(aggregate.execution),
       assertionStatus: aggregate.execution.assertionStatus,

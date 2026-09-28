@@ -38,3 +38,21 @@ test("HTTP 503-style numeric code remains transport ambiguity", () => {
   assert.equal(result.outcome, "AMBIGUOUS");
   assert.equal(result.evidence.errorType, "TRANSPORT_UNKNOWN");
 });
+
+
+test("generic negative JSON-RPC internal error remains ambiguous", () => {
+  const error = Object.assign(new Error("Internal error"), { code: -32603 });
+  const result = classifyBroadcastError(error);
+  assert.equal(result.outcome, "AMBIGUOUS");
+  assert.equal(result.evidence.errorType, "TRANSPORT_UNKNOWN");
+});
+
+test("rejection evidence nested in JSON-RPC data is recognized", () => {
+  const error = Object.assign(new Error("RPC request failed"), {
+    code: -32603,
+    data: { cause: "PoolRejectedRBF: fee too low to replace" },
+  });
+  const result = classifyBroadcastError(error);
+  assert.equal(result.outcome, "NODE_REJECTED");
+  assert.equal(result.evidence.conflictType, "INPUT_CONFLICT_SUSPECTED");
+});

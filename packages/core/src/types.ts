@@ -53,6 +53,41 @@ export interface OutPointRef {
   index: number;
 }
 
+export const inputRoles = [
+  "APPLICATION_STATE",
+  "WALLET_FUNDING",
+  "FEE",
+  "DEPENDENCY",
+  "OTHER",
+] as const;
+export type InputRole = (typeof inputRoles)[number];
+
+export interface InputRef {
+  outPoint: OutPointRef;
+  role: InputRole;
+  resourceKey?: string;
+}
+
+export const attemptKinds = [
+  "INITIAL",
+  "REBUILD",
+  "RBF_REPLACEMENT",
+  "MANUAL_RETRY",
+] as const;
+export type AttemptKind = (typeof attemptKinds)[number];
+
+export const attemptDispositions = [
+  "ACTIVE",
+  "SUPERSEDED",
+  "CONFIRMED",
+  "REJECTED",
+  "CONFLICTED",
+  "ABANDONED",
+] as const;
+export type AttemptDisposition = (typeof attemptDispositions)[number];
+
+export type ConflictDomain = "APPLICATION" | "WALLET" | "MIXED" | "UNKNOWN";
+
 export const conflictTypes = [
   "INPUT_CONFLICT_SUSPECTED",
   "INPUT_SPENT",
@@ -67,6 +102,8 @@ export const recommendedActions = [
   "WAIT_FOR_RECONCILIATION",
   "WAIT_AND_RECONCILE",
   "REBUILD_FROM_LIVE_STATE",
+  "RECOLLECT_WALLET_INPUTS",
+  "REBUILD_AND_RESIGN",
   "RECONCILE_CANONICAL_STATE",
   "MANUAL_REVIEW",
 ] as const;
@@ -158,12 +195,33 @@ export interface EvidenceStateEvent {
   rawObservation: unknown;
 }
 
+export interface EvidenceAttempt {
+  id: string;
+  attemptNumber: number;
+  txHash: string;
+  parentAttemptId: string | null;
+  attemptKind: AttemptKind;
+  disposition: AttemptDisposition;
+  inputRefs: InputRef[];
+  submissionStatus: SubmissionStatus;
+  chainStatus: ChainStatus;
+  workflowStatus: WorkflowStatus;
+  conflictType: ConflictType | null;
+  conflictDetails: unknown;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface EvidenceDocument {
-  schemaVersion: "cellflow-evidence-v1";
+  schemaVersion: "cellflow-evidence-v2";
   projectId: string;
   intentId: string;
   txHash: string | null;
   inputOutPoints: OutPointRef[];
+  inputRefs: InputRef[];
+  activeAttemptId: string | null;
+  winningAttemptId: string | null;
+  attempts: EvidenceAttempt[];
   network: string;
   overallStatus: OverallStatus;
   submissionStatus: SubmissionStatus;

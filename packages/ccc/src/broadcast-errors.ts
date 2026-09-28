@@ -6,19 +6,12 @@ export interface ClassifiedSubmissionFailure {
   details?: Record<string, unknown>;
 }
 
-const transportPattern = /(?:timeout|timed out|network|fetch failed|connection|econnreset|econnrefused|socket|abort(?:ed|error)?|dns|enotfound|gateway|\b50[234]\b)/i;
-const rejectionPattern = /(?:pool.*reject|transaction.*reject|invalid transaction|invalid tx|verification failed|script.*(?:failed|error)|resolve.*failed|unknown out\s*point|dead input|already spent|fee too low|replace(?:ment)?|\brbf\b|unconfirmed input)/i;
-const inputConflictPattern = /(?:unknown out\s*point|dead input|already spent|fee too low|replace(?:ment)?|\brbf\b|unconfirmed input|input.*conflict)/i;
+const transportPattern = /(?:timeout|timed out|network|fetch failed|connection|econnreset|econnrefused|socket|abort(?:ed|error)?|dns|enotfound|gateway|internal error|server error|temporarily unavailable|\b50[234]\b)/i;
+const rejectionPattern = /(?:pool.*reject|transaction.*reject|invalid transaction|invalid tx|verification failed|script.*(?:failed|error)|resolve.*failed|unknown out\s*point|unknown\(outpoint|dead\(outpoint|dead input|already spent|fee too low|replace(?:ment)?|poolrejectedrbf|\brbf\b|unconfirmed input)/i;
+const inputConflictPattern = /(?:unknown out\s*point|unknown\(outpoint|dead\(outpoint|dead input|already spent|fee too low|replace(?:ment)?|poolrejectedrbf|\brbf\b|unconfirmed input|input.*conflict)/i;
 
 function errorRecord(error: unknown): Record<string, unknown> | null {
   return error && typeof error === "object" ? error as Record<string, unknown> : null;
-}
-
-function errorMessage(error: unknown): string {
-  if (error instanceof Error && error.message) return error.message.slice(0, 4000);
-  const record = errorRecord(error);
-  if (record && typeof record.message === "string") return record.message.slice(0, 4000);
-  return String(error).slice(0, 4000);
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -34,29 +27,38 @@ function errorCode(error: unknown): string | undefined {
   return undefined;
 }
 
-function hasStructuredRpcCode(error: unknown): boolean {
+function collectEvidenceText(error: unknown): string {
+  const parts: string[] = [];
   let current: unknown = error;
   for (let depth = 0; depth < 4; depth += 1) {
+    if (current instanceof Error && current.message) parts.push(current.message);
     const record = errorRecord(current);
     if (!record) break;
-    // JSON-RPC error codes are negative. Positive HTTP status codes such as 502/503
-    // must remain ambiguous transport failures unless their message itself proves
-    // a deterministic CKB rejection.
-    if (typeof record.code === "number" && record.code < 0) return true;
+    if (!(current instanceof Error) && typeof record.message === "string") parts.push(record.message);
+    if (typeof record.data === "string") parts.push(record.data);
+    else if (record.data !== undefined) {
+      try { parts.push(JSON.stringify(record.data)); } catch { /* evidence text is best-effort */ }
+    }
     current = record.cause;
   }
-  return false;
+  const joined = parts.filter(Boolean).join(" | ");
+  return (joined || String(error)).slice(0, 4000);
 }
 
+/**
+ * Classify only transaction-level rejection evidence as NODE_REJECTED.
+ * A negative JSON-RPC code alone is not sufficient: -32603 and similar server
+ * failures can be transport/server uncertainty after the node accepted a tx.
+ */
 export function classifyBroadcastError(error: unknown): {
   outcome: "AMBIGUOUS" | "NODE_REJECTED";
   evidence: ClassifiedSubmissionFailure;
 } {
-  const message = errorMessage(error);
+  const message = collectEvidenceText(error);
   const code = errorCode(error);
   const record = errorRecord(error);
   const name = error instanceof Error ? error.name : typeof record?.name === "string" ? record.name : undefined;
-  const explicitRejection = hasStructuredRpcCode(error) || rejectionPattern.test(message);
+  const explicitRejection = rejectionPattern.test(message);
   const conflictSuspected = explicitRejection && inputConflictPattern.test(message);
 
   if (explicitRejection) {
@@ -84,7 +86,7 @@ export function classifyBroadcastError(error: unknown): {
       errorMessage: message,
       details: {
         ...(name ? { name } : {}),
-        classification: transportPattern.test(message) ? "transport-failure" : "unclassified-send-error",
+        classification: transportPattern.test(message) ? "transport-unknown" : "rpc-outcome-unknown",
       },
     },
   };
