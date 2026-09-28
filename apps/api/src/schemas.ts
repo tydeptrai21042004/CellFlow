@@ -1,4 +1,4 @@
-import type { SubmissionFailureEvidence } from "@cellflow/core";
+import type { InputRef, SubmissionFailureEvidence } from "@cellflow/core";
 import { z } from "zod";
 
 const hex = z.string().regex(/^0x[0-9a-fA-F]*$/);
@@ -35,7 +35,11 @@ export const inputRefSchema = z.object({
   outPoint: outPointSchema,
   role: z.enum(["APPLICATION_STATE", "WALLET_FUNDING", "FEE", "DEPENDENCY", "OTHER"]),
   resourceKey: z.string().trim().min(1).max(256).optional(),
-});
+}).transform((value): InputRef => ({
+  outPoint: value.outPoint,
+  role: value.role,
+  ...(value.resourceKey !== undefined ? { resourceKey: value.resourceKey } : {}),
+}));
 
 export const txHashSchema = z.object({ txHash: z.string() });
 
