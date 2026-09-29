@@ -83,7 +83,19 @@ export function deriveRecommendedAction(
   if (snapshot.workflowStatus === "REORGED" || conflictType === "REORG_CONFLICT") {
     return "RECONCILE_CANONICAL_STATE";
   }
-  if (conflictType === "INPUT_CONFLICT_SUSPECTED") return "WAIT_AND_RECONCILE";
+  if (conflictType === "INPUT_CONFLICT_SUSPECTED") {
+    const details = conflictDetails && typeof conflictDetails === "object" && !Array.isArray(conflictDetails)
+      ? conflictDetails as Record<string, unknown>
+      : {};
+    if (details.classification === "MEMPOOL_CONTENDED" && details.graceExpired === true) {
+      const domain = conflictDomainFromDetails(conflictDetails);
+      if (domain === "WALLET") return "RECOLLECT_WALLET_INPUTS";
+      if (domain === "APPLICATION") return "REBUILD_FROM_LIVE_STATE";
+      if (domain === "MIXED") return "REBUILD_AND_RESIGN";
+      return "MANUAL_REVIEW";
+    }
+    return "WAIT_AND_RECONCILE";
+  }
   if (assertionStatus === "FAILED" || conflictType === "EXPECTED_CELL_ASSERTION_FAILED") {
     return "MANUAL_REVIEW";
   }

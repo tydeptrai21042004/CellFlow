@@ -33,6 +33,54 @@ export function nextReconcileDelayMs(attempt: number, chainStatus: string): numb
   return 20_000;
 }
 
+
+function contentionGraceMs(): number {
+  const parsed = Number(process.env.CELLFLOW_CONTENTION_GRACE_MS ?? "30000");
+  if (!Number.isFinite(parsed)) return 30_000;
+  return Math.min(Math.max(Math.floor(parsed), 1_000), 10 * 60_000);
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function contentionDetails(
+  priorValue: unknown,
+  inspection: InputInspection,
+): Record<string, unknown> {
+  const prior = asRecord(priorValue);
+  const sameContention = prior.classification === "MEMPOOL_CONTENDED";
+  const firstObservedAt = sameContention && typeof prior.firstObservedAt === "string"
+    ? prior.firstObservedAt
+    : inspection.observedAt;
+  const graceMs = sameContention && typeof prior.graceMs === "number"
+    ? prior.graceMs
+    : contentionGraceMs();
+  const firstMs = Date.parse(firstObservedAt);
+  const fallbackFirstMs = Date.parse(inspection.observedAt);
+  const baseMs = Number.isFinite(firstMs) ? firstMs : fallbackFirstMs;
+  const graceExpiresAt = new Date(baseMs + graceMs).toISOString();
+  const observedMs = Date.parse(inspection.observedAt);
+  const graceExpired = Number.isFinite(observedMs) && observedMs >= baseMs + graceMs;
+  return {
+    source: "reconciliation",
+    classification: "MEMPOOL_CONTENDED",
+    canonicalSpendConfirmed: false,
+    firstObservedAt,
+    lastObservedAt: inspection.observedAt,
+    observedAt: inspection.observedAt,
+    graceMs,
+    graceExpiresAt,
+    graceExpired,
+    tipBlockNumber: inspection.tipBlockNumber,
+    inputDomain: inputConflictDomain(inspection, "contended"),
+    contendedInputs: inspection.contendedInputs,
+    inputs: inspection.inputs,
+  };
+}
+
 function endpointsFor(projectRpcUrl: string | null): string[] {
   return parseRpcUrls(
     projectRpcUrl,
@@ -280,18 +328,16 @@ async function reconcileIntentOnce(
   } else if (observation.status === "UNKNOWN" && inputInspection) {
     if (inputInspection.state === "MEMPOOL_CONTENDED") {
       conflictType = "INPUT_CONFLICT_SUSPECTED";
-      conflictDetails = {
-        source: "reconciliation",
-        classification: "MEMPOOL_CONTENDED",
-        canonicalSpendConfirmed: false,
-        observedAt: inputInspection.observedAt,
-        tipBlockNumber: inputInspection.tipBlockNumber,
-        inputDomain: inputConflictDomain(inputInspection, "contended"),
-        contendedInputs: inputInspection.contendedInputs,
-        inputs: inputInspection.inputs,
-      };
-      eventKind = "INPUT_POOL_CONTENTION_DETECTED";
-      reason = "Exact transaction is absent while an original input is live canonically but unavailable with tx-pool state";
+      const priorContention = asRecord(aggregate.execution.conflictDetails);
+      conflictDetails = contentionDetails(aggregate.execution.conflictDetails, inputInspection);
+      const details = asRecord(conflictDetails);
+      const graceJustExpired = details.graceExpired === true && priorContention.graceExpired !== true;
+      eventKind = graceJustExpired
+        ? "INPUT_CONTENTION_GRACE_EXPIRED"
+        : "INPUT_POOL_CONTENTION_DETECTED";
+      reason = graceJustExpired
+        ? "The configured input-contention grace window expired; recovery is now selected from the semantic input role while reconciliation continues"
+        : "Exact transaction is absent while an original input is live canonically but unavailable with tx-pool state";
     } else if (inputInspection.state === "CANONICALLY_SPENT") {
       const priorDetails = aggregate.execution.conflictDetails;
       if (conflictObservationMatured(aggregate.execution, inputInspection)) {

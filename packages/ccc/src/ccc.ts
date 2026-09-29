@@ -47,6 +47,8 @@ export interface PrepareTrackedTransactionOptions {
   intentId: string;
   metadata?: Record<string, unknown>;
   expectedCells?: unknown[];
+  /** Explicit semantic roles take precedence over all role inference. */
+  inputRefs?: InputRef[];
   /** Inputs owned by application state before CCC adds wallet/funding capacity. */
   applicationInputs?: OutPointRef[];
   attemptKind?: AttemptKind;
@@ -97,13 +99,28 @@ function outPointKey(outPoint: OutPointRef): string {
 
 export function classifyInputRefs(
   inputOutPoints: OutPointRef[],
+  explicitInputRefs: InputRef[] = [],
   applicationInputs: OutPointRef[] = [],
   originalInputs: OutPointRef[] = [],
 ): InputRef[] {
+  const finalInputs = new Set(inputOutPoints.map(outPointKey));
+  const explicit = new Map<string, InputRef>();
+  for (const ref of explicitInputRefs) {
+    const key = outPointKey(ref.outPoint);
+    if (!finalInputs.has(key)) {
+      throw new TypeError(`Explicit inputRef ${key} does not exist in the final signed transaction`);
+    }
+    if (explicit.has(key)) {
+      throw new TypeError(`Duplicate explicit inputRef for ${key}`);
+    }
+    explicit.set(key, ref);
+  }
   const application = new Set(applicationInputs.map(outPointKey));
   const original = new Set(originalInputs.map(outPointKey));
   return inputOutPoints.map((outPoint) => {
     const key = outPointKey(outPoint);
+    const declared = explicit.get(key);
+    if (declared) return { ...declared, outPoint };
     return {
       outPoint,
       role: application.has(key)
@@ -125,7 +142,15 @@ export async function prepareTrackedTransaction(
 
   // signTransaction performs the signer preparation flow itself. Calling
   // prepareTransaction first and then signTransaction can prepare twice.
-  const signed = await options.signer.signTransaction(options.transaction);
+  // CCC 1.19.x accepts TransactionLike here. With exactOptionalPropertyTypes,
+  // the concrete Transaction class is not structurally assignable because its
+  // cached/optional CellInput metadata includes explicit `undefined` in the
+  // class type. Runtime-wise this is the exact CCC Transaction instance the
+  // signer expects, so keep the object unchanged and isolate the compatibility
+  // cast at the library boundary instead of weakening project-wide TS checks.
+  const signed = await options.signer.signTransaction(
+    options.transaction as unknown as Parameters<ccc.Signer["signTransaction"]>[0],
+  );
   // CKB transaction identity excludes witnesses. Persist both identity and the
   // exact original inputs before any broadcast so later reconciliation can tell
   // submission ambiguity from an input race.
@@ -133,6 +158,7 @@ export async function prepareTrackedTransaction(
   const inputOutPoints = extractInputOutPoints(signed);
   const inputRefs = classifyInputRefs(
     inputOutPoints,
+    options.inputRefs ?? [],
     options.applicationInputs ?? [],
     originalInputs,
   );
@@ -163,7 +189,9 @@ export async function prepareTrackedTransaction(
 
       let returnedHash: ccc.Hex;
       try {
-        returnedHash = await options.signer.client.sendTransaction(signed);
+        returnedHash = await options.signer.client.sendTransaction(
+          signed as unknown as Parameters<typeof options.signer.client.sendTransaction>[0],
+        );
       } catch (error) {
         const classified = classifyBroadcastError(error);
         if (classified.outcome === "NODE_REJECTED") {
