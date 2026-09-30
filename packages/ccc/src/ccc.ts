@@ -1,5 +1,5 @@
 import { ccc } from "@ckb-ccc/core";
-import type { AttemptKind, InputRef, OutPointRef, SubmissionFailureEvidence } from "@cellflow/core";
+import { signedPayloadFingerprintSha256, type AttemptKind, type InputRef, type OutPointRef, type SubmissionFailureEvidence } from "@cellflow/core";
 import { CellFlowClient } from "./client.ts";
 import { classifyBroadcastError } from "./broadcast-errors.ts";
 
@@ -155,6 +155,10 @@ export async function prepareTrackedTransaction(
   // exact original inputs before any broadcast so later reconciliation can tell
   // submission ambiguity from an input race.
   const txHash = signed.hash();
+  const signedPayloadHashSha256 = await signedPayloadFingerprintSha256(signed);
+  if (!signedPayloadHashSha256) {
+    throw new TypeError("Unable to fingerprint the complete signed CKB transaction payload");
+  }
   const inputOutPoints = extractInputOutPoints(signed);
   const inputRefs = classifyInputRefs(
     inputOutPoints,
@@ -166,6 +170,7 @@ export async function prepareTrackedTransaction(
   await options.flow.prepare({
     intentId: options.intentId,
     txHash,
+    signedPayloadHashSha256,
     inputOutPoints,
     inputRefs,
     metadata: options.metadata ?? {},

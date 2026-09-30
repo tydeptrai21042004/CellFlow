@@ -8,7 +8,7 @@ test("CCC performs direct preflight before broadcasting", async () => {
   const source = await text("packages/ccc/src/ccc.ts");
   const preflightAt = source.indexOf("await options.flow.preflight");
   const broadcastingAt = source.indexOf("await options.flow.markBroadcasting");
-  const sendAt = source.indexOf("sendTransaction(signed)");
+  const sendAt = source.indexOf("sendTransaction(");
   assert.ok(preflightAt >= 0);
   assert.ok(broadcastingAt > preflightAt);
   assert.ok(sendAt > broadcastingAt);

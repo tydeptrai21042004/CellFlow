@@ -297,6 +297,7 @@ export class CellFlowService {
     intentId: string,
     txHashInput: string,
     submissionStatus: "PREPARED" | "SUBMITTED",
+    signedPayloadHashSha256?: string,
     inputOutPoints?: OutPointRef[],
     inputRefs?: InputRef[],
     attemptKind?: AttemptKind,
@@ -352,6 +353,7 @@ export class CellFlowService {
           aggregate: current,
           txHash,
           submissionStatus,
+          ...(signedPayloadHashSha256 ? { signedPayloadHashSha256: signedPayloadHashSha256.toLowerCase() } : {}),
           ...(normalizedInputs ? { inputOutPoints: normalizedInputs } : {}),
           ...(normalizedInputRefs ? { inputRefs: normalizedInputRefs } : {}),
           attemptKind: effectiveAttemptKind,
@@ -372,6 +374,9 @@ export class CellFlowService {
         }
         if (error instanceof Error && error.message === "ATTEMPT_INPUT_CONFLICT") {
           throw new CellFlowError("INTENT_CONFLICT", "Transaction attempt already exists with different input evidence", 409);
+        }
+        if (error instanceof Error && error.message === "ATTEMPT_SIGNED_PAYLOAD_CONFLICT") {
+          throw new CellFlowError("INTENT_CONFLICT", "Transaction attempt already exists with a different signed-payload fingerprint", 409);
         }
         if (error instanceof Error && error.message === "ATTEMPT_PARENT_CONFLICT") {
           throw new CellFlowError("INTENT_CONFLICT", "parentAttemptId does not belong to this intent", 409);
@@ -583,7 +588,12 @@ export class CellFlowService {
         id: attempt.id,
         attemptNumber: attempt.attemptNumber,
         txHash: attempt.txHash,
+        signedPayloadHashSha256: attempt.signedPayloadHashSha256,
         parentAttemptId: attempt.parentAttemptId,
+        replacesAttemptId: attempt.attemptKind === "RBF_REPLACEMENT" ? attempt.parentAttemptId : null,
+        replacedByAttemptId: aggregate.attempts.find((candidate) =>
+          candidate.attemptKind === "RBF_REPLACEMENT" && candidate.parentAttemptId === attempt.id
+        )?.id ?? null,
         attemptKind: attempt.attemptKind,
         disposition: attempt.disposition,
         inputRefs: attempt.inputRefs,

@@ -7,7 +7,8 @@ export interface ClassifiedSubmissionFailure {
 }
 
 const transportPattern = /(?:timeout|timed out|network|fetch failed|connection|econnreset|econnrefused|socket|abort(?:ed|error)?|dns|enotfound|gateway|internal error|server error|temporarily unavailable|\b50[234]\b)/i;
-const rejectionPattern = /(?:pool.*reject|transaction.*reject|invalid transaction|invalid tx|verification failed|script.*(?:failed|error)|resolve.*failed|unknown out\s*point|unknown\(outpoint|dead\(outpoint|dead input|already spent|fee too low|replace(?:ment)?|poolrejectedrbf|\brbf\b|unconfirmed input)/i;
+const maturityOrSincePattern = /(?:\bimmature\b|cellbase.*(?:mature|maturity)|since.*(?:not|invalid|mature|satisfied|reached)|not.*mature|maturity.*(?:not|require|fail))/i;
+const rejectionPattern = /(?:pool.*reject|transaction.*reject|invalid transaction|invalid tx|verification failed|script.*(?:failed|error)|resolve.*failed|unknown out\s*point|unknown\(outpoint|dead\(outpoint|dead input|already spent|fee too low|replace(?:ment)?|poolrejectedrbf|\brbf\b|unconfirmed input|\bimmature\b|cellbase.*(?:mature|maturity)|since.*(?:not|invalid|mature|satisfied|reached)|not.*mature)/i;
 const inputConflictPattern = /(?:unknown out\s*point|unknown\(outpoint|dead\(outpoint|dead input|already spent|fee too low|replace(?:ment)?|poolrejectedrbf|\brbf\b|unconfirmed input|input.*conflict)/i;
 
 function errorRecord(error: unknown): Record<string, unknown> | null {
@@ -60,6 +61,7 @@ export function classifyBroadcastError(error: unknown): {
   const name = error instanceof Error ? error.name : typeof record?.name === "string" ? record.name : undefined;
   const explicitRejection = rejectionPattern.test(message);
   const conflictSuspected = explicitRejection && inputConflictPattern.test(message);
+  const retryableMaturityOrSince = explicitRejection && maturityOrSincePattern.test(message);
 
   if (explicitRejection) {
     return {
@@ -73,6 +75,11 @@ export function classifyBroadcastError(error: unknown): {
           ...(name ? { name } : {}),
           classification: "explicit-node-rejection",
           canonicalSpendConfirmed: false,
+          ...(retryableMaturityOrSince ? {
+            retryable: true,
+            retryReason: "CKB_MATURITY_OR_SINCE",
+            requiresResign: false,
+          } : {}),
         },
       },
     };

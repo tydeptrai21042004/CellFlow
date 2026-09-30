@@ -17,6 +17,7 @@ export interface RpcTransactionLike {
 
 export interface RpcLiveCellLike {
   status: string;
+  block_hash?: string | null;
   cell?: {
     output: RpcCellOutput;
     data?: { content?: string; hash?: string } | string | null;
@@ -50,6 +51,7 @@ export interface AssertionResult {
   outputIndex: number;
   mode: "created" | "live";
   checks: AssertionCheck[];
+  evidence?: Record<string, unknown>;
 }
 
 function normalizeIntegerHex(value: string): bigint | null {
@@ -181,5 +183,9 @@ export function verifyLiveCell(
   const dataValue = typeof liveCell.cell.data === "string"
     ? liveCell.cell.data
     : liveCell.cell.data?.content ?? null;
-  return verifyCellOutput(liveCell.cell.output, dataValue, assertion, "live");
+  const result = verifyCellOutput(liveCell.cell.output, dataValue, assertion, "live");
+  return {
+    ...result,
+    evidence: { liveBlockHash: liveCell.block_hash ?? null },
+  };
 }

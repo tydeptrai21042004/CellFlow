@@ -15,7 +15,7 @@ test("session 1 migration persists inputs and submission conflict evidence", asy
 test("CCC prepare persists exact inputs before any broadcast call", async () => {
   const source = await text("packages/ccc/src/ccc.ts");
   const prepareAt = source.indexOf("await options.flow.prepare");
-  const sendAt = source.indexOf("sendTransaction(signed)");
+  const sendAt = source.indexOf("sendTransaction(");
   assert.ok(prepareAt >= 0 && sendAt > prepareAt);
   assert.match(source, /extractInputOutPoints\(signed\)/);
   assert.match(source, /input\.previousOutput/);

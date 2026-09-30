@@ -56,3 +56,13 @@ test("rejection evidence nested in JSON-RPC data is recognized", () => {
   assert.equal(result.outcome, "NODE_REJECTED");
   assert.equal(result.evidence.conflictType, "INPUT_CONFLICT_SUSPECTED");
 });
+
+
+test("CKB since or maturity rejection is explicit but retryable without resigning", () => {
+  const result = classifyBroadcastError(new Error("Transaction rejected: input since condition not reached; cell is immature"));
+  assert.equal(result.outcome, "NODE_REJECTED");
+  assert.equal(result.evidence.errorType, "RPC_REJECTION");
+  assert.equal(result.evidence.details?.retryable, true);
+  assert.equal(result.evidence.details?.retryReason, "CKB_MATURITY_OR_SINCE");
+  assert.equal(result.evidence.details?.requiresResign, false);
+});

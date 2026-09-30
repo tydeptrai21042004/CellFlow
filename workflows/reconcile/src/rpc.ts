@@ -394,6 +394,27 @@ export class CkbRpcClient {
     return this.call<RpcLiveCellResult | null>("get_live_cell", params);
   }
 
+  async verifyCanonicalBlockAt(endpoint: string, blockHash: string): Promise<{
+    canonical: boolean | null;
+    blockNumber: string | null;
+    canonicalBlockHash: string | null;
+  }> {
+    if (!this.urls.includes(endpoint)) {
+      throw new CellFlowError("RPC_UNAVAILABLE", "Requested canonicality endpoint is not configured", 503);
+    }
+    const session = new RpcEndpointSession(endpoint);
+    const header = await session.call<Record<string, unknown> | null>("get_header", [blockHash]);
+    const blockNumber = headerNumber(header) ?? null;
+    if (!blockNumber) return { canonical: null, blockNumber: null, canonicalBlockHash: null };
+    const canonicalBlockHash = await session.call<string | null>("get_block_hash", [blockNumber]);
+    if (!canonicalBlockHash) return { canonical: null, blockNumber, canonicalBlockHash: null };
+    return {
+      canonical: canonicalBlockHash.toLowerCase() === blockHash.toLowerCase(),
+      blockNumber,
+      canonicalBlockHash,
+    };
+  }
+
   async inspectInputOutPoints(
     inputOutPoints: Array<OutPointRef | InputRef>,
     expectedIdentity: RpcIdentityExpectation = {},
@@ -445,6 +466,7 @@ export class CkbRpcClient {
             status: "UNKNOWN", observedAt,
             raw: {
               txStatus: null,
+              rpcEndpoint: session.url,
               priorCommitCanonical,
               ...(inputInspection ? { inputInspection } : {}),
             },
@@ -476,7 +498,7 @@ export class CkbRpcClient {
           return {
             observation: {
               status: "UNKNOWN", observedAt, rpcEndpoint: session.url,
-              raw: { txStatus: status, blockHash, blockNumber, canonicalBlockHash, priorCommitCanonical },
+              raw: { txStatus: status, rpcEndpoint: session.url, blockHash, blockNumber, canonicalBlockHash, priorCommitCanonical },
               ...(canonicalBlockHash ? { canonicalBlockHash } : {}),
               ...(priorCommitCanonical === undefined ? {} : { priorCommitCanonical }),
             },
@@ -487,7 +509,7 @@ export class CkbRpcClient {
         return {
           observation: {
             status: "COMMITTED", observedAt, rpcEndpoint: session.url,
-            raw: { txStatus: status, blockHash, blockNumber, tipBlockNumber, canonicalBlockHash, priorCommitCanonical },
+            raw: { txStatus: status, rpcEndpoint: session.url, blockHash, blockNumber, tipBlockNumber, canonicalBlockHash, priorCommitCanonical },
             ...(blockHash ? { blockHash } : {}),
             ...(blockNumber ? { blockNumber } : {}),
             ...(tipBlockNumber ? { tipBlockNumber } : {}),
@@ -502,7 +524,7 @@ export class CkbRpcClient {
       const base = {
         observedAt,
         rpcEndpoint: session.url,
-        raw: { txStatus: status, reason: result.tx_status.reason ?? null, priorCommitCanonical },
+        raw: { txStatus: status, rpcEndpoint: session.url, reason: result.tx_status.reason ?? null, priorCommitCanonical },
         ...(priorCommitCanonical === undefined ? {} : { priorCommitCanonical }),
       };
       if (status === "pending") return { observation: { ...base, status: "PENDING" as const }, rpcResult: result, endpoint: session.url };
@@ -527,6 +549,7 @@ export class CkbRpcClient {
           status: "UNKNOWN" as const,
           raw: {
             txStatus: status,
+            rpcEndpoint: session.url,
             reason: result.tx_status.reason ?? null,
             priorCommitCanonical,
             ...(inputInspection ? { inputInspection } : {}),

@@ -7,6 +7,7 @@ import {
   breakSpendObservationContinuity,
   conflictObservationMatured,
   nextSpentObservationDetails,
+  signedPayloadFingerprintSha256,
   type ConflictDomain,
   type ConflictType,
   type ExecutionSnapshot,
@@ -199,6 +200,30 @@ async function evaluateAssertions(input: {
         if (!liveResult.ok) {
           return { status: "FAILED", results, reason: "Expected output Cell is not live or no longer matches the asserted state" };
         }
+        if (live?.block_hash) {
+          const canonical = await input.client.verifyCanonicalBlockAt(input.endpoint, live.block_hash);
+          liveResult.evidence = {
+            ...(liveResult.evidence ?? {}),
+            liveBlockHash: live.block_hash,
+            liveBlockNumber: canonical.blockNumber,
+            canonicalBlockHash: canonical.canonicalBlockHash,
+            canonicalAtObservation: canonical.canonical,
+            rpcEndpoint: input.endpoint,
+          };
+          liveResult.checks.push({
+            field: "live.blockHashCanonical",
+            expected: true,
+            actual: canonical.canonical,
+            ok: canonical.canonical === true,
+          });
+          liveResult.ok = liveResult.ok && canonical.canonical === true;
+          if (canonical.canonical === false) {
+            return { status: "FAILED", results, reason: "Expected live Cell was reported from a block that is no longer canonical" };
+          }
+          if (canonical.canonical === null) {
+            return { status: "PENDING", results, reason: "Live Cell block canonicality could not yet be verified" };
+          }
+        }
       } catch {
         return { status: "PENDING", results: null };
       }
@@ -315,7 +340,30 @@ async function reconcileIntentOnce(
   let conflictType: ConflictType | null = aggregate.execution.conflictType;
   let conflictDetails: unknown = aggregate.execution.conflictDetails;
 
-  if (["PENDING", "PROPOSED", "COMMITTED"].includes(observation.status)) {
+  let signedPayloadMismatch = false;
+  const expectedSignedPayloadHash = aggregate.activeAttempt?.signedPayloadHashSha256 ?? null;
+  if (expectedSignedPayloadHash && rpcResult?.transaction &&
+      ["PENDING", "PROPOSED", "COMMITTED"].includes(observation.status)) {
+    const observedSignedPayloadHash = await signedPayloadFingerprintSha256(rpcResult.transaction);
+    if (observedSignedPayloadHash && observedSignedPayloadHash !== expectedSignedPayloadHash) {
+      signedPayloadMismatch = true;
+      nextSnapshot = setWorkflowStatus(nextSnapshot, "CONFLICTED");
+      conflictType = "SIGNED_PAYLOAD_MISMATCH";
+      conflictDetails = {
+        source: "reconciliation",
+        classification: "SIGNED_PAYLOAD_MISMATCH",
+        txHash,
+        expectedSignedPayloadHashSha256: expectedSignedPayloadHash,
+        observedSignedPayloadHashSha256: observedSignedPayloadHash,
+        rpcEndpoint: endpoint,
+        observedAt: observation.observedAt,
+      };
+      eventKind = "SIGNED_PAYLOAD_MISMATCH";
+      reason = "CKB RPC returned the expected raw transaction hash but a different complete signed-payload fingerprint";
+    }
+  }
+
+  if (!signedPayloadMismatch && ["PENDING", "PROPOSED", "COMMITTED"].includes(observation.status)) {
     // Finding the exact transaction is stronger evidence than an earlier
     // submission-layer conflict suspicion. Keep history in events, not in the
     // current conflict field.

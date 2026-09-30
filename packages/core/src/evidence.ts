@@ -64,6 +64,7 @@ export function buildEvidence(input: EvidenceInput): EvidenceDocument {
       input.conflictType,
       input.assertionStatus,
       input.conflictDetails,
+      input.submissionErrorDetails,
     ),
     createdAt: input.createdAt,
     updatedAt: input.updatedAt,

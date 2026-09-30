@@ -99,6 +99,7 @@ export interface TransactionAttemptRecord {
   intentRowId: string;
   attemptNumber: number;
   txHash: string;
+  signedPayloadHashSha256: string | null;
   parentAttemptId: string | null;
   attemptKind: AttemptKind;
   disposition: AttemptDisposition;

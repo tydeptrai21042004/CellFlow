@@ -123,6 +123,7 @@ function mapAttempt(row: Record<string, unknown>): TransactionAttemptRecord {
     intentRowId: String(row.intent_row_id),
     attemptNumber: Number(row.attempt_number),
     txHash: String(row.tx_hash),
+    signedPayloadHashSha256: row.signed_payload_hash_sha256 ? String(row.signed_payload_hash_sha256) : null,
     parentAttemptId: row.parent_attempt_id ? String(row.parent_attempt_id) : null,
     attemptKind: row.attempt_kind as AttemptKind,
     disposition: row.disposition as AttemptDisposition,
@@ -666,6 +667,7 @@ export class CellFlowRepository {
   async attachTransaction(input: {
     aggregate: IntentAggregate;
     txHash: string;
+    signedPayloadHashSha256?: string | null;
     submissionStatus: ExecutionRecord["submissionStatus"];
     inputOutPoints?: OutPointRef[];
     inputRefs?: InputRef[];
@@ -713,7 +715,7 @@ export class CellFlowRepository {
 
     await this.sql.begin(async (tx) => {
       const hashOwner = await tx`
-        select id, intent_row_id, input_out_points, input_refs
+        select id, intent_row_id, input_out_points, input_refs, signed_payload_hash_sha256
         from transaction_attempts
         where project_id = ${input.aggregate.intent.projectId} and tx_hash = ${input.txHash}
         limit 1
@@ -729,6 +731,11 @@ export class CellFlowRepository {
       if (existingAttempt && persistedInputRefs.length > 0 &&
           JSON.stringify(existingAttempt.input_refs ?? []) !== JSON.stringify(persistedInputRefs)) {
         throw new Error("ATTEMPT_INPUT_CONFLICT");
+      }
+      if (existingAttempt && input.signedPayloadHashSha256 &&
+          existingAttempt.signed_payload_hash_sha256 &&
+          String(existingAttempt.signed_payload_hash_sha256).toLowerCase() !== input.signedPayloadHashSha256.toLowerCase()) {
+        throw new Error("ATTEMPT_SIGNED_PAYLOAD_CONFLICT");
       }
 
       let attemptId = existingAttempt ? String(existingAttempt.id) : null;
@@ -763,12 +770,12 @@ export class CellFlowRepository {
 
         await tx`
           insert into transaction_attempts (
-            id, project_id, intent_row_id, attempt_number, tx_hash, parent_attempt_id,
+            id, project_id, intent_row_id, attempt_number, tx_hash, signed_payload_hash_sha256, parent_attempt_id,
             attempt_kind, disposition, input_out_points, input_refs,
             submission_status, chain_status, workflow_status
           ) values (
             ${attemptId}, ${input.aggregate.intent.projectId}, ${input.aggregate.intent.id},
-            ${attemptNumber}, ${input.txHash}, ${parentAttemptId}, ${attemptKind}, 'ACTIVE',
+            ${attemptNumber}, ${input.txHash}, ${input.signedPayloadHashSha256 ?? null}, ${parentAttemptId}, ${attemptKind}, 'ACTIVE',
             ${tx.json(toJsonValue(persistedInputs))}, ${tx.json(toJsonValue(persistedInputRefs))},
             ${input.submissionStatus}, 'UNOBSERVED', 'IDLE'
           )
@@ -777,6 +784,7 @@ export class CellFlowRepository {
         await tx`
           update transaction_attempts
           set submission_status = ${input.submissionStatus},
+              signed_payload_hash_sha256 = coalesce(${input.signedPayloadHashSha256 ?? null}, signed_payload_hash_sha256),
               input_out_points = ${tx.json(toJsonValue(persistedInputs))},
               input_refs = ${tx.json(toJsonValue(persistedInputRefs))},
               updated_at = now()
@@ -1483,7 +1491,12 @@ export class CellFlowRepository {
         id: attempt.id,
         attemptNumber: attempt.attemptNumber,
         txHash: attempt.txHash,
+        signedPayloadHashSha256: attempt.signedPayloadHashSha256,
         parentAttemptId: attempt.parentAttemptId,
+        replacesAttemptId: attempt.attemptKind === "RBF_REPLACEMENT" ? attempt.parentAttemptId : null,
+        replacedByAttemptId: aggregate.attempts.find((candidate) =>
+          candidate.attemptKind === "RBF_REPLACEMENT" && candidate.parentAttemptId === attempt.id
+        )?.id ?? null,
         attemptKind: attempt.attemptKind,
         disposition: attempt.disposition,
         submissionStatus: attempt.submissionStatus,
@@ -1515,6 +1528,7 @@ export class CellFlowRepository {
         aggregate.execution.conflictType,
         aggregate.execution.assertionStatus,
         aggregate.execution.conflictDetails,
+        aggregate.execution.submissionErrorDetails,
       ),
       workflowRunId: aggregate.execution.workflowRunId,
       createdAt: aggregate.intent.createdAt,

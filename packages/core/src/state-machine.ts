@@ -71,6 +71,7 @@ export function deriveRecommendedAction(
   conflictType: ConflictType | null = null,
   assertionStatus: string | null = null,
   conflictDetails: unknown = null,
+  submissionErrorDetails: unknown = null,
 ): RecommendedAction {
   if (snapshot.workflowStatus === "CONFIRMED") return "NONE";
   if (conflictType === "INPUT_SPENT") {
@@ -96,8 +97,17 @@ export function deriveRecommendedAction(
     }
     return "WAIT_AND_RECONCILE";
   }
-  if (assertionStatus === "FAILED" || conflictType === "EXPECTED_CELL_ASSERTION_FAILED") {
+  if (assertionStatus === "FAILED" || conflictType === "EXPECTED_CELL_ASSERTION_FAILED" ||
+      conflictType === "SIGNED_PAYLOAD_MISMATCH") {
     return "MANUAL_REVIEW";
+  }
+  if (snapshot.submissionStatus === "NODE_REJECTED") {
+    const submissionDetails = submissionErrorDetails && typeof submissionErrorDetails === "object" && !Array.isArray(submissionErrorDetails)
+      ? submissionErrorDetails as Record<string, unknown>
+      : {};
+    if (submissionDetails.retryable === true && submissionDetails.retryReason === "CKB_MATURITY_OR_SINCE") {
+      return "WAIT_FOR_MATURITY";
+    }
   }
   if (snapshot.submissionStatus === "SUBMISSION_UNKNOWN") return "WAIT_FOR_RECONCILIATION";
   if (snapshot.workflowStatus === "RECONCILING" || snapshot.workflowStatus === "WAITING_CONFIRMATIONS") {

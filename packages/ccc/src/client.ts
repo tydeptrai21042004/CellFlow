@@ -20,6 +20,7 @@ export interface TrackInput {
 }
 
 export interface PrepareInput extends TrackInput {
+  signedPayloadHashSha256?: string;
   inputOutPoints?: OutPointRef[];
   inputRefs?: InputRef[];
   attemptKind?: AttemptKind;
@@ -119,6 +120,7 @@ export class CellFlowClient {
         method: "POST",
         body: JSON.stringify({
           txHash: input.txHash,
+          ...(input.signedPayloadHashSha256 ? { signedPayloadHashSha256: input.signedPayloadHashSha256 } : {}),
           inputOutPoints: input.inputOutPoints ?? [],
           inputRefs: input.inputRefs ?? [],
           ...(input.attemptKind ? { attemptKind: input.attemptKind } : {}),

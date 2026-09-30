@@ -93,6 +93,7 @@ export const conflictTypes = [
   "INPUT_SPENT",
   "EXPECTED_CELL_ASSERTION_FAILED",
   "REORG_CONFLICT",
+  "SIGNED_PAYLOAD_MISMATCH",
   "OTHER",
 ] as const;
 export type ConflictType = (typeof conflictTypes)[number];
@@ -105,6 +106,7 @@ export const recommendedActions = [
   "RECOLLECT_WALLET_INPUTS",
   "REBUILD_AND_RESIGN",
   "RECONCILE_CANONICAL_STATE",
+  "WAIT_FOR_MATURITY",
   "MANUAL_REVIEW",
 ] as const;
 export type RecommendedAction = (typeof recommendedActions)[number];
@@ -199,7 +201,10 @@ export interface EvidenceAttempt {
   id: string;
   attemptNumber: number;
   txHash: string;
+  signedPayloadHashSha256: string | null;
   parentAttemptId: string | null;
+  replacesAttemptId: string | null;
+  replacedByAttemptId: string | null;
   attemptKind: AttemptKind;
   disposition: AttemptDisposition;
   inputRefs: InputRef[];

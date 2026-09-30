@@ -16,6 +16,7 @@ import {
   breakSpendObservationContinuity,
   conflictObservationMatured,
   nextSpentObservationDetails,
+  signedPayloadFingerprintSha256,
 } from "../../.tmp/core/index.js";
 
 test("submission identity is persisted before broadcast", () => {
@@ -376,4 +377,50 @@ test("canonical spend maturity requires uninterrupted repeated evidence", () => 
   assert.equal(restarted.firstObservedTipBlockNumber, "0x68");
   assert.equal(restarted.spentObservationCount, 1);
   assert.equal(restarted.continuityBroken, false);
+});
+
+
+test("signed payload fingerprint is stable across CCC-style and RPC-style transaction shapes", async () => {
+  const hashA = `0x${"11".repeat(32)}`;
+  const hashB = `0x${"22".repeat(32)}`;
+  const scriptHash = `0x${"33".repeat(32)}`;
+  const cccStyle = {
+    version: 0n,
+    cellDeps: [{ outPoint: { txHash: hashA, index: 1n }, depType: "depGroup" }],
+    headerDeps: [hashB],
+    inputs: [{ since: 0n, previousOutput: { txHash: hashA, index: 2n } }],
+    outputs: [{ capacity: 1000n, lock: { codeHash: scriptHash, hashType: "type", args: "0x12" }, type: null }],
+    outputsData: ["0xab"],
+    witnesses: ["0x0102"],
+  };
+  const rpcStyle = {
+    version: "0x0",
+    cell_deps: [{ out_point: { tx_hash: hashA, index: "0x1" }, dep_type: "dep_group" }],
+    header_deps: [hashB],
+    inputs: [{ since: "0x0", previous_output: { tx_hash: hashA, index: "0x2" } }],
+    outputs: [{ capacity: "0x3e8", lock: { code_hash: scriptHash, hash_type: "type", args: "0x12" }, type: null }],
+    outputs_data: ["0xab"],
+    witnesses: ["0x0102"],
+  };
+  const first = await signedPayloadFingerprintSha256(cccStyle);
+  const second = await signedPayloadFingerprintSha256(rpcStyle);
+  assert.match(first, /^0x[0-9a-f]{64}$/);
+  assert.equal(first, second);
+
+  const witnessChanged = await signedPayloadFingerprintSha256({ ...rpcStyle, witnesses: ["0x0103"] });
+  assert.notEqual(first, witnessChanged);
+});
+
+test("retryable CKB maturity rejection recommends waiting instead of rebuilding", () => {
+  const rejected = updateSubmission(updateSubmission(initialSnapshot(), "PREPARED"), "NODE_REJECTED");
+  assert.equal(
+    deriveRecommendedAction(
+      rejected,
+      null,
+      null,
+      null,
+      { retryable: true, retryReason: "CKB_MATURITY_OR_SINCE" },
+    ),
+    "WAIT_FOR_MATURITY",
+  );
 });

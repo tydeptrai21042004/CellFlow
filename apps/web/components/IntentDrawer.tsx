@@ -13,6 +13,21 @@ export interface IntentEvent {
   occurredAt: string;
 }
 
+export interface IntentAttemptDetail {
+  id: string;
+  attemptNumber: number;
+  txHash: string;
+  signedPayloadHashSha256?: string | null;
+  parentAttemptId?: string | null;
+  replacesAttemptId?: string | null;
+  replacedByAttemptId?: string | null;
+  attemptKind: string;
+  disposition: string;
+  submissionStatus: string;
+  chainStatus: string;
+  workflowStatus: string;
+}
+
 export interface IntentDetail {
   intentId: string;
   txHash: string | null;
@@ -34,6 +49,7 @@ export interface IntentDetail {
   createdAt: string;
   updatedAt: string;
   events?: IntentEvent[];
+  attempts?: IntentAttemptDetail[];
 }
 
 interface Props {
@@ -98,6 +114,26 @@ export default function IntentDrawer({ detail, busy, onClose, onReconcile, onEvi
             <div><dt>Last update</dt><dd>{formatRelativeTime(detail.updatedAt)}</dd></div>
           </dl>
         </section>
+
+        {(detail.attempts?.length ?? 0) > 0 && (
+          <section className="drawer-section">
+            <div className="section-row"><h3>Attempt evidence</h3><span>{detail.attempts?.length ?? 0} signed attempt(s)</span></div>
+            <div className="data-columns">
+              {detail.attempts?.slice().reverse().map((attempt) => (
+                <div key={attempt.id}>
+                  <span className="micro-label">Attempt #{attempt.attemptNumber} · {attempt.attemptKind.replaceAll("_", " ")}</span>
+                  <dl className="detail-list">
+                    <div><dt>Disposition</dt><dd>{attempt.disposition.replaceAll("_", " ")}</dd></div>
+                    <div><dt>Transaction</dt><dd className="mono-line">{shortHash(attempt.txHash, 14, 10)}</dd></div>
+                    <div><dt>Signed payload</dt><dd className="mono-line">{shortHash(attempt.signedPayloadHashSha256, 14, 10)}</dd></div>
+                    {attempt.replacesAttemptId && <div><dt>RBF replaces</dt><dd className="mono-line">{shortHash(attempt.replacesAttemptId, 10, 8)}</dd></div>}
+                    {attempt.replacedByAttemptId && <div><dt>RBF replaced by</dt><dd className="mono-line">{shortHash(attempt.replacedByAttemptId, 10, 8)}</dd></div>}
+                  </dl>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
 
         <section className="drawer-section">
           <h3>Business context</h3>

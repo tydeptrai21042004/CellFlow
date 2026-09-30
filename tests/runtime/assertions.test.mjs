@@ -79,3 +79,25 @@ test("live Cell accepts direct data string payload", () => {
   const result = verifyLiveCell({ status: "live", cell: { output: tx.outputs[0], data: "0xABCD" } }, { outputIndex: 0, mode: "live", data: "0xabcd" });
   assert.equal(result.ok, true);
 });
+
+
+test("live Cell evidence preserves the CKB source block hash", () => {
+  const result = verifyLiveCell({
+    status: "live",
+    block_hash: `0x${"77".repeat(32)}`,
+    cell: {
+      output: {
+        capacity: "0x64",
+        lock: { code_hash: `0x${"11".repeat(32)}`, hash_type: "type", args: "0x" },
+        type: null,
+      },
+      data: { content: "0x" },
+    },
+  }, {
+    outputIndex: 0,
+    mode: "live",
+    capacity: "0x64",
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.evidence?.liveBlockHash, `0x${"77".repeat(32)}`);
+});
