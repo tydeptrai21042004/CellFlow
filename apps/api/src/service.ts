@@ -115,7 +115,7 @@ export class CellFlowService {
       }
     }
     const apiKey = generateApiKey();
-    const project = await this.repository.createProject({
+    const project = await this.repository.createInitialProject({
       name: input.name,
       network: input.network,
       rpcUrl: rpcUrl ?? null,
@@ -127,6 +127,13 @@ export class CellFlowService {
       apiKeyPrefix: apiKey.prefix,
       apiKeyHash: apiKey.hash,
     });
+    if (!project) {
+      throw new CellFlowError(
+        "SETUP_ALREADY_COMPLETE",
+        "Initial project bootstrap is already complete. Use the authenticated console for ongoing administration.",
+        409,
+      );
+    }
     return { project, apiKey: apiKey.key };
   }
 

@@ -1,4 +1,5 @@
 import { authenticateBearer } from "@cellflow/api";
+import { latestMigrationVersion } from "@cellflow/db";
 import { CkbRpcClient, parseRpcUrls } from "@cellflow/reconcile";
 import { repository } from "../../../lib/server.ts";
 
@@ -47,7 +48,7 @@ export async function GET(request: Request) {
     rpcTransport: !production || allowInsecureRpc || insecureRpcCount === 0,
     encryptionKey: Boolean(process.env.CELLFLOW_ENCRYPTION_KEY && process.env.CELLFLOW_ENCRYPTION_KEY.length >= 32),
     cronSecret: Boolean(process.env.CRON_SECRET && process.env.CRON_SECRET.length >= 24),
-    setupLocked: !production || process.env.CELLFLOW_SETUP_ENABLED !== "true",
+    setupLocked: !production,
   };
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -63,8 +64,11 @@ export async function GET(request: Request) {
   try {
     checks.database = await repository.ping();
     if (!checks.database) errors.push("database unavailable");
-    checks.schema = checks.database && await repository.hasMigration("006_transaction_attempts.sql");
-    if (checks.database && !checks.schema) errors.push("database schema is not at migration 006_transaction_attempts.sql");
+    checks.schema = Boolean(checks.database && latestMigrationVersion && await repository.hasMigration(latestMigrationVersion));
+    if (checks.database && !checks.schema) {
+      errors.push(`database schema is not at ${latestMigrationVersion ?? "the latest migration"}`);
+    }
+    checks.setupLocked = !production || (checks.schema && await repository.hasAnyProject());
   } catch {
     errors.push("database unavailable");
   }
@@ -112,7 +116,7 @@ export async function GET(request: Request) {
   if (!checks.rpcTransport) errors.push("plain HTTP CKB RPC is blocked in production unless CKB_ALLOW_INSECURE_RPC=true");
   if (!checks.encryptionKey) errors.push("encryption key missing or too short");
   if (!checks.cronSecret) errors.push("cron secret missing or too short");
-  if (!checks.setupLocked) errors.push("project bootstrap must be disabled after production provisioning");
+  if (!checks.setupLocked) errors.push("initial project bootstrap has not completed; create the first project through /console/setup");
 
   const ok = Object.values(checks).every(Boolean);
   const detailed = await canSeeDetails(request, production);

@@ -47,9 +47,6 @@ export async function authenticateBearer(
 }
 
 export function requireBootstrapToken(value: string | null): void {
-  if (process.env.NODE_ENV === "production" && process.env.CELLFLOW_SETUP_ENABLED !== "true") {
-    throw new CellFlowError("AUTH_INVALID", "Project bootstrap endpoint is disabled", 403);
-  }
   const expected = process.env.CELLFLOW_BOOTSTRAP_TOKEN;
   if (!expected || expected.length < 24) {
     throw new CellFlowError("INTERNAL_ERROR", "Server bootstrap token is not configured", 500);

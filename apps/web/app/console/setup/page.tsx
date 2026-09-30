@@ -4,8 +4,8 @@ import BootstrapProject from "../../../components/BootstrapProject.tsx";
 import ProductHeader from "../../../components/ProductHeader.tsx";
 
 export const metadata: Metadata = {
-  title: "CellFlow Setup — Project Bootstrap",
-  description: "One-time CellFlow project provisioning surface. Disable bootstrap after initial setup.",
+  title: "CellFlow Setup — Automatic Project Bootstrap",
+  description: "One-time CellFlow provisioning with automatic database migrations and durable bootstrap locking.",
 };
 
 export default function SetupPage() {
@@ -16,7 +16,7 @@ export default function SetupPage() {
         <div>
           <div className="eyebrow">Deployment administration</div>
           <h1>Project bootstrap</h1>
-          <p>Initial provisioning is intentionally separated from normal transaction operations. Complete it once, disable the bootstrap endpoint, and return to the operator console.</p>
+          <p>Provide the server bootstrap token once. CellFlow initializes the database schema, provisions the first project, and then locks this bootstrap path automatically.</p>
         </div>
         <Link className="button secondary" href="/console">← Back to console</Link>
       </section>

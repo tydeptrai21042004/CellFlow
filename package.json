@@ -13,10 +13,10 @@
   ],
   "scripts": {
     "dev": "npm run dev -w @cellflow/web",
-    "build": "npm run build -w @cellflow/web",
+    "build": "npm run generate:migrations && npm run build -w @cellflow/web",
     "start": "npm run start -w @cellflow/web",
-    "typecheck": "tsc -p tsconfig.check.json --noEmit",
-    "test": "npm run test:core && npm run test:assertions && npm run test:ccc-classifier && npm run test:rpc-integration && node --test tests/runtime/tree.test.mjs tests/runtime/hardening.test.mjs tests/runtime/ui.test.mjs tests/runtime/stability-upgrade.test.mjs tests/runtime/production-readiness.test.mjs tests/runtime/security-hardening.test.mjs tests/runtime/operational-upgrade.test.mjs tests/runtime/session1-input-evidence.test.mjs tests/runtime/session2-input-reconciliation.test.mjs tests/runtime/crowdcell-recovery-upgrade.test.mjs tests/runtime/funding-automation.test.mjs",
+    "typecheck": "npm run generate:migrations && tsc -p tsconfig.check.json --noEmit",
+    "test": "npm run test:core && npm run test:assertions && npm run test:ccc-classifier && npm run test:rpc-integration && node --test tests/runtime/tree.test.mjs tests/runtime/hardening.test.mjs tests/runtime/ui.test.mjs tests/runtime/stability-upgrade.test.mjs tests/runtime/production-readiness.test.mjs tests/runtime/security-hardening.test.mjs tests/runtime/operational-upgrade.test.mjs tests/runtime/session1-input-evidence.test.mjs tests/runtime/session2-input-reconciliation.test.mjs tests/runtime/crowdcell-recovery-upgrade.test.mjs tests/runtime/funding-automation.test.mjs tests/runtime/automatic-bootstrap.test.mjs",
     "test:core": "rm -rf .tmp/core && tsc -p packages/core/tsconfig.json && node --test tests/runtime/core.test.mjs",
     "migrate": "node scripts/migrate.mjs",
     "verify": "npm run test && node scripts/verify-tree.mjs",
@@ -35,7 +35,8 @@
     "evidence:db-restart": "node --experimental-transform-types scripts/evidence/db-restart-proof.mjs",
     "validate:crowdcell-review": "bash scripts/validate-crowdcell-review.sh",
     "validate:crowdcell-review:all": "bash scripts/validate-crowdcell-review.sh all",
-    "ci:vercel": "npm run typecheck && node --test tests/runtime/crowdcell-review-final.test.mjs tests/runtime/crowdcell-recovery-upgrade.test.mjs && npm run test:core && npm run test:ccc-classifier && npm run test:rpc-integration && npm run build"
+    "ci:vercel": "npm run typecheck && node --test tests/runtime/crowdcell-review-final.test.mjs tests/runtime/crowdcell-recovery-upgrade.test.mjs tests/runtime/automatic-bootstrap.test.mjs && npm run test:core && npm run test:ccc-classifier && npm run test:rpc-integration && npm run build",
+    "generate:migrations": "node scripts/generate-migration-bundle.mjs"
   },
   "devDependencies": {
     "@types/node": "22.0.0",

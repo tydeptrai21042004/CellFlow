@@ -193,6 +193,15 @@ export class CellFlowRepository {
     }
   }
 
+  async hasAnyProject(): Promise<boolean> {
+    try {
+      const rows = await this.sql`select exists(select 1 from projects limit 1) as exists`;
+      return Boolean(rows[0]?.exists);
+    } catch {
+      return false;
+    }
+  }
+
   private async insertEventAndOutbox(tx: TransactionSql, input: {
     projectId: string;
     intentRowId: string;
@@ -247,6 +256,39 @@ export class CellFlowRepository {
       on conflict (endpoint_id, event_id) do nothing
     `;
     return eventId;
+  }
+
+  async createInitialProject(input: {
+    name: string;
+    network: ProjectRecord["network"];
+    rpcUrl?: string | null;
+    rpcGenesisHash?: string | null;
+    confirmationPolicy: ConfirmationPolicy;
+    apiKeyId: string;
+    apiKeyPrefix: string;
+    apiKeyHash: string;
+  }): Promise<ProjectRecord | null> {
+    const projectId = randomUUID();
+    return this.sql.begin(async (tx) => {
+      // Serialize the one-time bootstrap decision and project/key insertion in
+      // the same transaction/connection. Concurrent setup requests cannot both win.
+      await tx`select pg_advisory_xact_lock(${1128678999}, ${1112493908})`;
+      const existing = await tx`select exists(select 1 from projects limit 1) as exists`;
+      if (Boolean(existing[0]?.exists)) return null;
+
+      const projectRows = await tx`
+        insert into projects (id, name, network, rpc_url, rpc_genesis_hash, confirmation_policy)
+        values (${projectId}, ${input.name}, ${input.network}, ${input.rpcUrl ?? null}, ${input.rpcGenesisHash ?? null}, ${tx.json(toJsonValue(input.confirmationPolicy))})
+        returning *
+      `;
+      await tx`
+        insert into api_keys (id, project_id, key_prefix, key_hash, scopes)
+        values (${input.apiKeyId}, ${projectId}, ${input.apiKeyPrefix}, ${input.apiKeyHash}, ${["read", "write", "admin"]})
+      `;
+      const row = projectRows[0];
+      if (!row) throw new Error("Failed to create initial project");
+      return mapProject(row);
+    });
   }
 
   async createProject(input: {
