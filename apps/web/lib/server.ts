@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { authenticateBearer, CellFlowService } from "@cellflow/api";
 import { CellFlowError } from "@cellflow/core";
 import {
@@ -24,6 +25,25 @@ function automaticBootstrapNetwork(): ProjectRecord["network"] {
   );
 }
 
+function automaticBootstrapAdminApiKey(): string {
+  const configured = process.env.CELLFLOW_INITIAL_ADMIN_API_KEY?.trim();
+  if (configured) return configured;
+
+  const bootstrapToken = process.env.CELLFLOW_BOOTSTRAP_TOKEN?.trim();
+  if (bootstrapToken && bootstrapToken.length >= 24) {
+    const suffix = createHmac("sha256", bootstrapToken)
+      .update("cellflow:auto-bootstrap:initial-admin:v1", "utf8")
+      .digest("base64url");
+    return `cf_live_${suffix}`;
+  }
+
+  throw new CellFlowError(
+    "INTERNAL_ERROR",
+    "Automatic bootstrap requires CELLFLOW_INITIAL_ADMIN_API_KEY or CELLFLOW_BOOTSTRAP_TOKEN",
+    500,
+  );
+}
+
 async function performAutomaticBootstrap(): Promise<void> {
   if (process.env.CELLFLOW_AUTO_BOOTSTRAP !== "true") return;
 
@@ -33,14 +53,7 @@ async function performAutomaticBootstrap(): Promise<void> {
 
   if (await repository.hasAnyProject()) return;
 
-  const initialApiKey = process.env.CELLFLOW_INITIAL_ADMIN_API_KEY?.trim();
-  if (!initialApiKey) {
-    throw new CellFlowError(
-      "INTERNAL_ERROR",
-      "CELLFLOW_AUTO_BOOTSTRAP=true requires CELLFLOW_INITIAL_ADMIN_API_KEY",
-      500,
-    );
-  }
+  const initialApiKey = automaticBootstrapAdminApiKey();
 
   try {
     await service.setupProject({
