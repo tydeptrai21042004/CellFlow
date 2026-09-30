@@ -56,8 +56,10 @@ export default function Dashboard() {
 
   const loadHealth = useCallback(async () => {
     const readinessRequest = async (): Promise<ReadyResponse> => {
-      const headers = canLoad ? { authorization: `Bearer ${apiKey}` } : undefined;
-      const response = await fetch("/api/ready", { cache: "no-store", headers });
+      const response = await fetch("/api/ready", {
+        cache: "no-store",
+        ...(canLoad ? { headers: { authorization: `Bearer ${apiKey}` } } : {}),
+      });
       const body = await response.json() as ReadyResponse;
       // A readiness 503 is an expected diagnostic response, not a transport failure.
       return body;
@@ -69,12 +71,13 @@ export default function Dashboard() {
     ]);
     const readyBody = readiness.status === "fulfilled" ? readiness.value : null;
     const detailedError = canLoad && readyBody?.errors?.length ? readyBody.errors[0] : undefined;
+    const readinessMessage = detailedError ?? readyBody?.status?.message;
     setHealth({
       database: database.status === "fulfilled" && database.value.ok ? "healthy" : "down",
       rpc: rpc.status === "fulfilled" && rpc.value.ok ? "healthy" : "down",
       readiness: readyBody?.ok ? "healthy" : "down",
       ...(readyBody?.status?.code ? { readinessCode: readyBody.status.code } : {}),
-      ...(detailedError || readyBody?.status?.message ? { readinessMessage: detailedError ?? readyBody?.status?.message } : {}),
+      ...(readinessMessage !== undefined ? { readinessMessage } : {}),
       ...(readyBody?.status ? { readinessAction: readyBody.status.action } : {}),
       ...(rpc.status === "fulfilled" && rpc.value.tip?.number ? { tip: rpc.value.tip.number } : {}),
       ...(rpc.status === "fulfilled" && typeof rpc.value.latencyMs === "number" ? { latencyMs: rpc.value.latencyMs } : {}),
