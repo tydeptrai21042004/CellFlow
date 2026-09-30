@@ -12,6 +12,44 @@ function normalizedHash(value: string | undefined): string | null {
   return /^0x[0-9a-f]{64}$/.test(hash) ? hash : null;
 }
 
+
+function publicReadinessStatus(checks: {
+  database: boolean;
+  schema: boolean;
+  rpc: boolean;
+  rpcNetwork: boolean;
+  rpcGenesis: boolean;
+  rpcTransport: boolean;
+  encryptionKey: boolean;
+  cronSecret: boolean;
+  setupLocked: boolean;
+}) {
+  if (!checks.database) {
+    return { code: "DATABASE_UNAVAILABLE", message: "Database is unavailable.", action: "Check DATABASE_URL and Neon availability." };
+  }
+  if (!checks.schema) {
+    return { code: "INITIAL_SETUP_REQUIRED", message: "CellFlow schema is not initialized yet.", action: "Open /console/setup and run the one-time initialization." };
+  }
+  if (!checks.setupLocked) {
+    return { code: "BOOTSTRAP_REQUIRED", message: "Initial project bootstrap has not completed.", action: "Open /console/setup and create the first project." };
+  }
+  if (!checks.rpc) {
+    return { code: "RPC_UNAVAILABLE", message: "One or more configured CKB RPC checks failed.", action: "Check the configured CKB RPC endpoints." };
+  }
+  if (!checks.rpcNetwork) {
+    return { code: "RPC_NETWORK_MISMATCH", message: "The CKB RPC network does not match CKB_NETWORK.", action: "Check CKB_NETWORK and RPC configuration." };
+  }
+  if (!checks.rpcGenesis) {
+    return { code: "RPC_GENESIS_MISMATCH", message: "The CKB RPC genesis hash does not match the pinned value.", action: "Check CKB_EXPECTED_GENESIS_HASH and RPC configuration." };
+  }
+  if (!checks.rpcTransport) {
+    return { code: "RPC_TRANSPORT_INSECURE", message: "Production readiness rejected an insecure CKB RPC transport.", action: "Use HTTPS RPC or explicitly allow insecure RPC for this deployment." };
+  }
+  if (!checks.encryptionKey || !checks.cronSecret) {
+    return { code: "SERVER_CONFIGURATION_INCOMPLETE", message: "Required production server secrets are missing or too short.", action: "Check CELLFLOW_ENCRYPTION_KEY and CRON_SECRET in Vercel." };
+  }
+  return { code: "READY", message: "All production readiness checks passed.", action: null };
+}
 function expectedChainForNetwork(network: string | undefined): string | null {
   if (network === "mainnet") return "ckb";
   if (network === "testnet") return "ckb_testnet";
@@ -119,6 +157,7 @@ export async function GET(request: Request) {
   if (!checks.setupLocked) errors.push("initial project bootstrap has not completed; create the first project through /console/setup");
 
   const ok = Object.values(checks).every(Boolean);
+  const status = publicReadinessStatus(checks);
   const detailed = await canSeeDetails(request, production);
   const rpc = { endpoints: endpointResults };
   const base = {
@@ -126,6 +165,7 @@ export async function GET(request: Request) {
     service: "cellflow",
     version: "0.3.0",
     releaseSha: process.env.VERCEL_GIT_COMMIT_SHA ?? process.env.CELLFLOW_RELEASE_SHA ?? null,
+    status,
   };
   return Response.json(
     detailed ? { ...base, checks, rpc, warnings, errors } : base,

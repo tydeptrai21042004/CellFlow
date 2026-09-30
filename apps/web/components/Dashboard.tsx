@@ -21,7 +21,18 @@ type Intent = {
   createdAt: string;
 };
 
-type Health = { database: "checking" | "healthy" | "down"; rpc: "checking" | "healthy" | "down"; readiness: "checking" | "healthy" | "down"; tip?: string; latencyMs?: number; };
+type ReadinessStatus = { code: string; message: string; action: string | null };
+type ReadyResponse = { ok: boolean; status?: ReadinessStatus; errors?: string[] };
+type Health = {
+  database: "checking" | "healthy" | "down";
+  rpc: "checking" | "healthy" | "down";
+  readiness: "checking" | "healthy" | "down";
+  readinessCode?: string;
+  readinessMessage?: string;
+  readinessAction?: string | null;
+  tip?: string;
+  latencyMs?: number;
+};
 type Operations = { dueReconciliations: number; leasedReconciliations: number; staleActiveIntents: number; oldestActiveAgeSeconds: number | null; pendingWebhooks: number; failedWebhooks: number; activeApiKeys: number; expiringApiKeys7d: number; lastEventAt: string | null; };
 
 const txHashPattern = /^0x[0-9a-fA-F]{64}$/;
@@ -44,19 +55,31 @@ export default function Dashboard() {
   const canLoad = useMemo(() => apiKey.startsWith("cf_live_"), [apiKey]);
 
   const loadHealth = useCallback(async () => {
+    const readinessRequest = async (): Promise<ReadyResponse> => {
+      const headers = canLoad ? { authorization: `Bearer ${apiKey}` } : undefined;
+      const response = await fetch("/api/ready", { cache: "no-store", headers });
+      const body = await response.json() as ReadyResponse;
+      // A readiness 503 is an expected diagnostic response, not a transport failure.
+      return body;
+    };
     const [database, rpc, readiness] = await Promise.allSettled([
       jsonRequest<{ ok: boolean; database?: string }>("/api/health"),
       jsonRequest<{ ok: boolean; tip?: { number?: string }; latencyMs?: number }>("/api/health/rpc"),
-      jsonRequest<{ ok: boolean }>("/api/ready"),
+      readinessRequest(),
     ]);
+    const readyBody = readiness.status === "fulfilled" ? readiness.value : null;
+    const detailedError = canLoad && readyBody?.errors?.length ? readyBody.errors[0] : undefined;
     setHealth({
       database: database.status === "fulfilled" && database.value.ok ? "healthy" : "down",
       rpc: rpc.status === "fulfilled" && rpc.value.ok ? "healthy" : "down",
-      readiness: readiness.status === "fulfilled" && readiness.value.ok ? "healthy" : "down",
+      readiness: readyBody?.ok ? "healthy" : "down",
+      ...(readyBody?.status?.code ? { readinessCode: readyBody.status.code } : {}),
+      ...(detailedError || readyBody?.status?.message ? { readinessMessage: detailedError ?? readyBody?.status?.message } : {}),
+      ...(readyBody?.status ? { readinessAction: readyBody.status.action } : {}),
       ...(rpc.status === "fulfilled" && rpc.value.tip?.number ? { tip: rpc.value.tip.number } : {}),
       ...(rpc.status === "fulfilled" && typeof rpc.value.latencyMs === "number" ? { latencyMs: rpc.value.latencyMs } : {}),
     });
-  }, []);
+  }, [apiKey, canLoad]);
 
   const load = useCallback(async (silent = false) => {
     if (!canLoad) return;
@@ -190,8 +213,12 @@ export default function Dashboard() {
         <div className="health-cluster" aria-label="Service health">
           <span className={`health-pill health-${health.database}`}>DB <b>{health.database}</b></span>
           <span className={`health-pill health-${health.rpc}`}>CKB RPC <b>{health.rpc}</b>{health.tip ? ` · ${health.tip}` : ""}{typeof health.latencyMs === "number" ? ` · ${health.latencyMs}ms` : ""}</span>
-          <span className={`health-pill health-${health.readiness}`}>Ready <b>{health.readiness}</b></span>
+          <span className={`health-pill health-${health.readiness}`} title={health.readinessMessage}>Ready <b>{health.readiness}</b>{health.readinessCode && health.readiness !== "healthy" ? ` · ${health.readinessCode}` : ""}</span>
         </div>
+        {health.readiness === "down" && health.readinessMessage && <div className="notice" role="status" aria-live="polite">
+          <strong>Readiness:</strong> {health.readinessMessage}{health.readinessAction ? ` ${health.readinessAction}` : ""}
+          {(health.readinessCode === "INITIAL_SETUP_REQUIRED" || health.readinessCode === "BOOTSTRAP_REQUIRED") && <> <a href="/console/setup">Open initial setup →</a></>}
+        </div>}
       </div>
 
       <div className="metric-grid" aria-label="Project summary">

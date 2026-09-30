@@ -9,6 +9,7 @@ const service = fs.readFileSync("apps/api/src/service.ts", "utf8");
 const repository = fs.readFileSync("packages/db/src/repository.ts", "utf8");
 const migrate = fs.readFileSync("packages/db/src/migrate.ts", "utf8");
 const bootstrapUi = fs.readFileSync("apps/web/components/BootstrapProject.tsx", "utf8");
+const dashboard = fs.readFileSync("apps/web/components/Dashboard.tsx", "utf8");
 
 test("initial setup authenticates and migrates before creating the first project", () => {
   assert.match(setupRoute, /requireBootstrapToken/);
@@ -43,4 +44,14 @@ test("bootstrap token no longer depends on a manual setup toggle", () => {
 test("setup UI describes automatic migration and lock behavior", () => {
   assert.match(bootstrapUi, /Schema initialization and bootstrap locking are automatic/);
   assert.match(bootstrapUi, /No manual SQL migration or post-setup environment toggle is required/);
+});
+
+test("readiness exposes safe public diagnostics and dashboard renders them", () => {
+  assert.match(readyRoute, /INITIAL_SETUP_REQUIRED/);
+  assert.match(readyRoute, /BOOTSTRAP_REQUIRED/);
+  assert.match(readyRoute, /SERVER_CONFIGURATION_INCOMPLETE/);
+  assert.match(readyRoute, /status,/);
+  assert.match(dashboard, /readinessRequest/);
+  assert.match(dashboard, /INITIAL_SETUP_REQUIRED/);
+  assert.match(dashboard, /Open initial setup/);
 });
