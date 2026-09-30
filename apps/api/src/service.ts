@@ -26,7 +26,7 @@ import {
 } from "@cellflow/db";
 import { CkbRpcClient, parseRpcUrls, reconcileIntent, type InputInspection } from "@cellflow/reconcile";
 import { encryptSecret, validateWebhookUrl } from "@cellflow/webhooks";
-import { generateApiKey } from "./auth.ts";
+import { generateApiKey, prepareApiKey } from "./auth.ts";
 
 function stable(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
@@ -70,6 +70,7 @@ export class CellFlowService {
     network: ProjectRecord["network"];
     rpcUrl?: string;
     confirmationPolicy?: ProjectRecord["confirmationPolicy"];
+    initialApiKey?: string;
   }): Promise<{ project: ProjectRecord; apiKey: string }> {
     let rpcUrl = input.rpcUrl;
     let rpcGenesisHash = process.env.CKB_EXPECTED_GENESIS_HASH?.trim().toLowerCase() || null;
@@ -114,7 +115,7 @@ export class CellFlowService {
         );
       }
     }
-    const apiKey = generateApiKey();
+    const apiKey = input.initialApiKey ? prepareApiKey(input.initialApiKey) : generateApiKey();
     const project = await this.repository.createInitialProject({
       name: input.name,
       network: input.network,

@@ -1,7 +1,7 @@
 import { authenticateBearer } from "@cellflow/api";
 import { latestMigrationVersion } from "@cellflow/db";
 import { CkbRpcClient, parseRpcUrls } from "@cellflow/reconcile";
-import { repository } from "../../../lib/server.ts";
+import { ensureAutomaticBootstrap, repository } from "../../../lib/server.ts";
 
 export const runtime = "nodejs";
 export const maxDuration = 15;
@@ -67,6 +67,14 @@ async function canSeeDetails(request: Request, production: boolean): Promise<boo
 }
 
 export async function GET(request: Request) {
+  let automaticBootstrapError: string | null = null;
+  try {
+    await ensureAutomaticBootstrap();
+  } catch (error) {
+    automaticBootstrapError = error instanceof Error ? error.message : "Automatic bootstrap failed";
+    console.error("CellFlow automatic bootstrap failed", error);
+  }
+
   const urls = parseRpcUrls(
     process.env.CKB_RPC_URL,
     process.env.CKB_RPC_FALLBACK_URL,
@@ -90,6 +98,7 @@ export async function GET(request: Request) {
   };
   const errors: string[] = [];
   const warnings: string[] = [];
+  if (automaticBootstrapError) errors.push(`automatic bootstrap failed: ${automaticBootstrapError}`);
   const endpointResults: Array<{
     endpoint: string;
     ok: boolean;

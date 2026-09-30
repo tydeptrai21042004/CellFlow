@@ -1,9 +1,71 @@
 import { authenticateBearer, CellFlowService } from "@cellflow/api";
 import { CellFlowError } from "@cellflow/core";
-import { CellFlowRepository, type ApiKeyScope } from "@cellflow/db";
+import {
+  CellFlowRepository,
+  migrateDatabase,
+  type ApiKeyScope,
+  type ProjectRecord,
+} from "@cellflow/db";
 
 export const repository = new CellFlowRepository();
 export const service = new CellFlowService(repository);
+
+let automaticBootstrapPromise: Promise<void> | null = null;
+
+function automaticBootstrapNetwork(): ProjectRecord["network"] {
+  const configured = process.env.CKB_NETWORK?.trim().toLowerCase();
+  if (!configured || configured === "testnet") return "testnet";
+  if (configured === "mainnet") return "mainnet";
+  if (configured === "devnet") return "devnet";
+  throw new CellFlowError(
+    "INTERNAL_ERROR",
+    `Unsupported CKB_NETWORK for automatic bootstrap: ${configured}`,
+    500,
+  );
+}
+
+async function performAutomaticBootstrap(): Promise<void> {
+  if (process.env.CELLFLOW_AUTO_BOOTSTRAP !== "true") return;
+
+  // Safe to run from concurrent Vercel invocations: migrateDatabase() and
+  // createInitialProject() each use PostgreSQL transaction-scoped advisory locks.
+  await migrateDatabase();
+
+  if (await repository.hasAnyProject()) return;
+
+  const initialApiKey = process.env.CELLFLOW_INITIAL_ADMIN_API_KEY?.trim();
+  if (!initialApiKey) {
+    throw new CellFlowError(
+      "INTERNAL_ERROR",
+      "CELLFLOW_AUTO_BOOTSTRAP=true requires CELLFLOW_INITIAL_ADMIN_API_KEY",
+      500,
+    );
+  }
+
+  try {
+    await service.setupProject({
+      name: process.env.CELLFLOW_INITIAL_PROJECT_NAME?.trim() || "CellFlow Production",
+      network: automaticBootstrapNetwork(),
+      initialApiKey,
+    });
+  } catch (error) {
+    if (error instanceof CellFlowError && error.code === "SETUP_ALREADY_COMPLETE") return;
+    throw error;
+  }
+}
+
+export async function ensureAutomaticBootstrap(): Promise<void> {
+  if (process.env.CELLFLOW_AUTO_BOOTSTRAP !== "true") return;
+
+  if (!automaticBootstrapPromise) {
+    automaticBootstrapPromise = performAutomaticBootstrap().catch((error) => {
+      automaticBootstrapPromise = null;
+      throw error;
+    });
+  }
+
+  await automaticBootstrapPromise;
+}
 
 export async function projectFromRequest(request: Request, requiredScope: ApiKeyScope = "read") {
   return authenticateBearer(request.headers.get("authorization"), repository, requiredScope);

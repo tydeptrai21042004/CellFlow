@@ -11,6 +11,23 @@ export function generateApiKey(): { id: string; key: string; prefix: string; has
   return { id: randomUUID(), key, prefix: key.slice(0, 16), hash: hashApiKey(key) };
 }
 
+export function prepareApiKey(key: string): { id: string; key: string; prefix: string; hash: string } {
+  const normalized = key.trim();
+  if (!normalized.startsWith("cf_live_") || normalized.length < 32) {
+    throw new CellFlowError(
+      "INTERNAL_ERROR",
+      "CELLFLOW_INITIAL_ADMIN_API_KEY must be a valid cf_live_ API key with at least 32 characters",
+      500,
+    );
+  }
+  return {
+    id: randomUUID(),
+    key: normalized,
+    prefix: normalized.slice(0, 16),
+    hash: hashApiKey(normalized),
+  };
+}
+
 export async function authenticateBearer(
   authorization: string | null,
   repository = new CellFlowRepository(),
