@@ -21,6 +21,8 @@ export interface TrackInput {
 
 export interface PrepareInput extends TrackInput {
   signedPayloadHashSha256?: string;
+  /** Explicitly allow a new witness/signature payload for the same raw CKB tx hash. */
+  allowSignedPayloadRevision?: boolean;
   inputOutPoints?: OutPointRef[];
   inputRefs?: InputRef[];
   attemptKind?: AttemptKind;
@@ -121,6 +123,7 @@ export class CellFlowClient {
         body: JSON.stringify({
           txHash: input.txHash,
           ...(input.signedPayloadHashSha256 ? { signedPayloadHashSha256: input.signedPayloadHashSha256 } : {}),
+          ...(input.allowSignedPayloadRevision === true ? { allowSignedPayloadRevision: true } : {}),
           inputOutPoints: input.inputOutPoints ?? [],
           inputRefs: input.inputRefs ?? [],
           ...(input.attemptKind ? { attemptKind: input.attemptKind } : {}),

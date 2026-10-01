@@ -37,6 +37,7 @@ for (const path of [
   "evidence/testnet/manifest.example.json",
   ".nvmrc",
   ".gitignore",
+  ".env.testnet.example",
 ]) add(`file:${path}`, await exists(path), "blocker", path);
 
 const manifests = ["package.json"];

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   applyChainObservation,
   deriveOverallStatus,
+  initialSnapshot,
   setWorkflowStatus,
   supersedeNodeRejectionFromChainEvidence,
   breakSpendObservationContinuity,
@@ -232,9 +233,113 @@ async function evaluateAssertions(input: {
   return { status: "VERIFIED", results };
 }
 
+async function promoteCommittedCompetingCandidate(
+  aggregate: IntentAggregate,
+  repository: CellFlowRepository,
+  client: CkbRpcClient,
+  identity: { chain: string | null; genesisHash: string | null },
+): Promise<IntentAggregate | null> {
+  const candidates = aggregate.attempts.filter((attempt) =>
+    attempt.disposition === "ACTIVE" && attempt.id !== aggregate.intent.activeAttemptId
+  );
+  for (const candidate of candidates) {
+    const candidateInputs = candidate.inputRefs.length > 0 ? candidate.inputRefs : candidate.inputOutPoints;
+    const startedAt = Date.now();
+    try {
+      const observed = await client.observe(candidate.txHash, undefined, identity, candidateInputs);
+      await repository.recordRpcObservation({
+        aggregate,
+        attemptId: candidate.id,
+        txHash: candidate.txHash,
+        rpcEndpoint: observed.endpoint,
+        observedStatus: observed.observation.status,
+        ...(observed.observation.blockHash ? { blockHash: observed.observation.blockHash } : {}),
+        ...(observed.observation.blockNumber ? { blockNumber: observed.observation.blockNumber } : {}),
+        ...(observed.observation.tipBlockNumber ? { tipBlockNumber: observed.observation.tipBlockNumber } : {}),
+        ...(observed.observation.canonicalBlockHash ? { canonicalBlockHash: observed.observation.canonicalBlockHash } : {}),
+        ...(observed.inputInspection ? { inputState: observed.inputInspection.state } : {}),
+        latencyMs: Date.now() - startedAt,
+        rawObservation: observed.observation.raw,
+        observedAt: observed.observation.observedAt,
+      });
+      const base = initialSnapshot(aggregate.execution.confirmationPolicy);
+      const candidateBase: ExecutionSnapshot = {
+        ...base,
+        submissionStatus: candidate.submissionStatus === "NOT_SUBMITTED" ? "SUBMITTED" : candidate.submissionStatus,
+        chainStatus: candidate.chainStatus,
+        workflowStatus: candidate.workflowStatus,
+      };
+
+      if (observed.observation.status !== "COMMITTED") {
+        const sideApplied = applyChainObservation(candidateBase, observed.observation);
+        await repository.updateCandidateAttempt({
+          aggregate,
+          attemptId: candidate.id,
+          snapshot: sideApplied.snapshot,
+        });
+        continue;
+      }
+
+      if (candidate.signedPayloadHashSha256 && observed.rpcResult?.transaction) {
+        const observedFingerprint = await signedPayloadFingerprintSha256(observed.rpcResult.transaction);
+        if (observedFingerprint && observedFingerprint !== candidate.signedPayloadHashSha256) {
+          // Same raw CKB hash with an unexpected witness payload is not enough
+          // evidence to promote a competing attempt into the business projection.
+          await repository.updateCandidateAttempt({
+            aggregate,
+            attemptId: candidate.id,
+            snapshot: setWorkflowStatus(candidateBase, "CONFLICTED"),
+            conflictType: "SIGNED_PAYLOAD_MISMATCH",
+            conflictDetails: {
+              source: "competing_attempt_scan",
+              expectedSignedPayloadHashSha256: candidate.signedPayloadHashSha256,
+              observedSignedPayloadHashSha256: observedFingerprint,
+              rpcEndpoint: observed.endpoint,
+              observedAt: observed.observation.observedAt,
+            },
+          });
+          continue;
+        }
+      }
+
+      const applied = applyChainObservation(candidateBase, observed.observation);
+      return repository.promoteAttemptProjection({
+        aggregate,
+        attemptId: candidate.id,
+        snapshot: applied.snapshot,
+        eventKind: applied.snapshot.workflowStatus === "CONFIRMED"
+          ? "COMPETING_ATTEMPT_CONFIRMED"
+          : "COMPETING_ATTEMPT_COMMITTED",
+        reason: "A previously unresolved transaction candidate committed on the canonical chain and now drives the intent projection",
+        rawObservation: observed.observation.raw,
+        occurredAt: observed.observation.observedAt,
+        nextReconcileAt: applied.snapshot.workflowStatus === "CONFIRMED" ? null : new Date(Date.now() + 12_000),
+      });
+    } catch (error) {
+      const observedAt = new Date().toISOString();
+      await repository.recordRpcObservation({
+        aggregate,
+        attemptId: candidate.id,
+        txHash: candidate.txHash,
+        observedStatus: "RPC_FAILURE",
+        latencyMs: Date.now() - startedAt,
+        rawObservation: {
+          source: "competing_attempt_scan",
+          error: error instanceof Error ? error.message : "RPC observation failed",
+        },
+        observedAt,
+      }).catch(() => undefined);
+      // A failed side-candidate probe is absence of evidence. The current
+      // projection must still reconcile normally.
+    }
+  }
+  return null;
+}
+
 async function reconcileIntentOnce(
   aggregate: IntentAggregate,
   repository: CellFlowRepository,
+  scanCompetingCandidates = true,
 ): Promise<ReconcileResult> {
   const txHash = aggregate.execution.txHash;
   if (!txHash) {
@@ -257,12 +362,23 @@ async function reconcileIntentOnce(
     throw new Error(`Project network ${project.network} does not match global CKB_NETWORK ${process.env.CKB_NETWORK}`);
   }
   const client = new CkbRpcClient(urls);
+  const identity = {
+    chain: expectedChain(project.network),
+    genesisHash: project.rpcGenesisHash ?? process.env.CKB_EXPECTED_GENESIS_HASH ?? null,
+  };
+  if (scanCompetingCandidates && aggregate.attempts.some((attempt) =>
+    attempt.disposition === "ACTIVE" && attempt.id !== aggregate.intent.activeAttemptId
+  )) {
+    const promoted = await promoteCommittedCompetingCandidate(aggregate, repository, client, identity);
+    if (promoted) return reconcileIntentOnce(promoted, repository, false);
+  }
   const prior = snapshotFromExecution(aggregate.execution);
   const reconciliationInputs = aggregate.execution.inputRefs.length > 0
     ? aggregate.execution.inputRefs
     : aggregate.execution.inputOutPoints.map((outPoint) => ({ outPoint, role: "OTHER" as const }));
 
   let observed;
+  const observationStartedAt = Date.now();
   try {
     observed = await observeTransaction(
       client,
@@ -270,10 +386,7 @@ async function reconcileIntentOnce(
       prior.committedBlockHash && prior.committedBlockNumber
         ? { blockHash: prior.committedBlockHash, blockNumber: prior.committedBlockNumber }
         : undefined,
-      {
-        chain: expectedChain(project.network),
-        genesisHash: project.rpcGenesisHash ?? process.env.CKB_EXPECTED_GENESIS_HASH ?? null,
-      },
+      identity,
       reconciliationInputs,
     );
   } catch (error) {
@@ -290,6 +403,14 @@ async function reconcileIntentOnce(
         error: error instanceof Error ? error.message : "RPC observation failed",
       },
     };
+    await repository.recordRpcObservation({
+      aggregate,
+      attemptId: aggregate.intent.activeAttemptId,
+      txHash,
+      observedStatus: "RPC_FAILURE",
+      rawObservation: failureObservation.raw,
+      observedAt,
+    }).catch(() => undefined);
     const applied = applyChainObservation(prior, failureObservation);
     const nextDelayMs = nextReconcileDelayMs(aggregate.execution.reconcileAttempts, "UNKNOWN");
     const brokenConflictDetails = breakSpendObservationContinuity(
@@ -325,6 +446,21 @@ async function reconcileIntentOnce(
   }
 
   const { observation, rpcResult, endpoint, inputInspection } = observed;
+  await repository.recordRpcObservation({
+    aggregate,
+    attemptId: aggregate.intent.activeAttemptId,
+    txHash,
+    rpcEndpoint: endpoint,
+    observedStatus: observation.status,
+    ...(observation.blockHash ? { blockHash: observation.blockHash } : {}),
+    ...(observation.blockNumber ? { blockNumber: observation.blockNumber } : {}),
+    ...(observation.tipBlockNumber ? { tipBlockNumber: observation.tipBlockNumber } : {}),
+    ...(observation.canonicalBlockHash ? { canonicalBlockHash: observation.canonicalBlockHash } : {}),
+    ...(inputInspection ? { inputState: inputInspection.state } : {}),
+    latencyMs: Date.now() - observationStartedAt,
+    rawObservation: observation.raw,
+    observedAt: observation.observedAt,
+  });
   const applied = applyChainObservation(prior, observation);
   let nextSnapshot: ExecutionSnapshot = applied.snapshot;
   const rejectionSuperseded =
@@ -490,8 +626,16 @@ async function reconcileIntentOnce(
     }
   }
 
-  const terminal = isTerminal(nextSnapshot, assertionStatus ?? null, assertions.length);
+  const unresolvedCompetingCandidate =
+    nextSnapshot.workflowStatus !== "CONFIRMED" &&
+    aggregate.attempts.some((attempt) =>
+      attempt.disposition === "ACTIVE" && attempt.id !== aggregate.intent.activeAttemptId
+    );
+  const terminal =
+    isTerminal(nextSnapshot, assertionStatus ?? null, assertions.length) &&
+    !unresolvedCompetingCandidate;
   const nodeRejectionConflictResolved =
+    !unresolvedCompetingCandidate &&
     observation.status === "UNKNOWN" &&
     aggregate.execution.submissionStatus === "NODE_REJECTED" &&
     conflictType === null;

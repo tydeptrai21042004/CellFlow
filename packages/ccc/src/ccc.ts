@@ -53,6 +53,8 @@ export interface PrepareTrackedTransactionOptions {
   applicationInputs?: OutPointRef[];
   attemptKind?: AttemptKind;
   parentAttemptId?: string | null;
+  /** Set only for intentional CoBuild/multisig witness evolution of the same raw tx. */
+  allowSignedPayloadRevision?: boolean;
 }
 
 export interface PreparedTrackedTransaction {
@@ -177,6 +179,7 @@ export async function prepareTrackedTransaction(
     expectedCells: options.expectedCells ?? [],
     ...(options.attemptKind ? { attemptKind: options.attemptKind } : {}),
     ...(options.parentAttemptId !== undefined ? { parentAttemptId: options.parentAttemptId } : {}),
+    ...(options.allowSignedPayloadRevision === true ? { allowSignedPayloadRevision: true } : {}),
   });
 
   return {

@@ -668,6 +668,7 @@ export class CellFlowRepository {
     aggregate: IntentAggregate;
     txHash: string;
     signedPayloadHashSha256?: string | null;
+    allowSignedPayloadRevision?: boolean;
     submissionStatus: ExecutionRecord["submissionStatus"];
     inputOutPoints?: OutPointRef[];
     inputRefs?: InputRef[];
@@ -683,23 +684,6 @@ export class CellFlowRepository {
     const creatingAttempt = !sameHash;
     const attemptKind: AttemptKind = input.attemptKind ?? (currentHash ? "REBUILD" : "INITIAL");
 
-    if (creatingAttempt && currentHash) {
-      if (attemptKind === "INITIAL") throw new Error("ATTEMPT_KIND_INVALID");
-      const potentiallyLive =
-        input.aggregate.execution.submissionStatus === "BROADCASTING" ||
-        input.aggregate.execution.submissionStatus === "SUBMISSION_UNKNOWN" ||
-        input.aggregate.execution.submissionStatus === "SUBMITTED" ||
-        input.aggregate.execution.chainStatus === "PENDING" ||
-        input.aggregate.execution.chainStatus === "PROPOSED" ||
-        input.aggregate.execution.chainStatus === "COMMITTED";
-      if (potentiallyLive) {
-        // CellFlow does not abandon an attempt that may still commit. RBF behavior
-        // is observed/reconciled from chain/pool evidence rather than initiated
-        // by replacing the active attempt before its outcome is known.
-        throw new Error("UNSAFE_ATTEMPT_REPLACEMENT");
-      }
-    }
-
     const persistedInputs = input.inputOutPoints && input.inputOutPoints.length > 0
       ? input.inputOutPoints
       : sameHash
@@ -712,6 +696,46 @@ export class CellFlowRepository {
         : sameHash
           ? input.aggregate.execution.inputRefs
           : [];
+
+    if (creatingAttempt && currentHash) {
+      if (attemptKind === "INITIAL") throw new Error("ATTEMPT_KIND_INVALID");
+      const currentFinalized =
+        input.aggregate.execution.chainStatus === "COMMITTED" ||
+        input.aggregate.execution.workflowStatus === "CONFIRMED";
+      const potentiallyLive =
+        input.aggregate.execution.submissionStatus === "BROADCASTING" ||
+        input.aggregate.execution.submissionStatus === "SUBMISSION_UNKNOWN" ||
+        input.aggregate.execution.submissionStatus === "SUBMITTED" ||
+        input.aggregate.execution.chainStatus === "PENDING" ||
+        input.aggregate.execution.chainStatus === "PROPOSED";
+
+      if (currentFinalized) {
+        throw new Error("UNSAFE_ATTEMPT_REPLACEMENT");
+      }
+
+      if (potentiallyLive && attemptKind !== "RBF_REPLACEMENT") {
+        // Rebuild/manual attempts must not silently abandon a transaction that
+        // may still commit. RBF is the one deliberate exception: both hashes
+        // remain ACTIVE candidates until chain evidence chooses a winner.
+        throw new Error("UNSAFE_ATTEMPT_REPLACEMENT");
+      }
+
+      if (attemptKind === "RBF_REPLACEMENT") {
+        const activeParent = input.aggregate.activeAttempt;
+        if (!activeParent) throw new Error("ATTEMPT_PARENT_CONFLICT");
+        if (input.parentAttemptId && input.parentAttemptId !== activeParent.id) {
+          throw new Error("ATTEMPT_PARENT_CONFLICT");
+        }
+        const parentKeys = new Set(activeParent.inputOutPoints.map((item) => `${item.txHash.toLowerCase()}:${item.index}`));
+        const sharesInput = persistedInputs.some((item) => parentKeys.has(`${item.txHash.toLowerCase()}:${item.index}`));
+        if (!sharesInput) {
+          // CKB RBF replacement semantics require conflict through at least one
+          // shared input. Without that evidence this is a separate transaction,
+          // not a safe replacement candidate.
+          throw new Error("RBF_INPUTS_DO_NOT_OVERLAP");
+        }
+      }
+    }
 
     await this.sql.begin(async (tx) => {
       const hashOwner = await tx`
@@ -734,7 +758,8 @@ export class CellFlowRepository {
       }
       if (existingAttempt && input.signedPayloadHashSha256 &&
           existingAttempt.signed_payload_hash_sha256 &&
-          String(existingAttempt.signed_payload_hash_sha256).toLowerCase() !== input.signedPayloadHashSha256.toLowerCase()) {
+          String(existingAttempt.signed_payload_hash_sha256).toLowerCase() !== input.signedPayloadHashSha256.toLowerCase() &&
+          input.allowSignedPayloadRevision !== true) {
         throw new Error("ATTEMPT_SIGNED_PAYLOAD_CONFLICT");
       }
 
@@ -759,7 +784,7 @@ export class CellFlowRepository {
           if (parentRows.length !== 1) throw new Error("ATTEMPT_PARENT_CONFLICT");
         }
 
-        if (input.aggregate.intent.activeAttemptId) {
+        if (input.aggregate.intent.activeAttemptId && attemptKind !== "RBF_REPLACEMENT") {
           await tx`
             update transaction_attempts
             set disposition = ${priorAttemptDisposition(input.aggregate.execution)}, updated_at = now()
@@ -790,6 +815,33 @@ export class CellFlowRepository {
               updated_at = now()
           where id = ${attemptId}
         `;
+      }
+
+      if (input.signedPayloadHashSha256) {
+        const revisionRows = await tx`
+          select coalesce(max(revision_number), 0)::int as max_revision
+          from signed_payload_revisions
+          where attempt_id = ${attemptId}
+        `;
+        const existingRevision = await tx`
+          select id from signed_payload_revisions
+          where attempt_id = ${attemptId}
+            and payload_hash_sha256 = ${input.signedPayloadHashSha256.toLowerCase()}
+          limit 1
+        `;
+        if (existingRevision.length === 0) {
+          const revisionNumber = Number(revisionRows[0]?.max_revision ?? 0) + 1;
+          await tx`
+            insert into signed_payload_revisions (
+              id, project_id, intent_row_id, attempt_id, revision_number,
+              payload_hash_sha256, revision_kind
+            ) values (
+              ${randomUUID()}, ${input.aggregate.intent.projectId}, ${input.aggregate.intent.id}, ${attemptId}, ${revisionNumber},
+              ${input.signedPayloadHashSha256.toLowerCase()},
+              ${revisionNumber === 1 ? "INITIAL" : input.allowSignedPayloadRevision === true ? "COSIGNATURE" : "MANUAL_REPLACEMENT"}
+            )
+          `;
+        }
       }
 
       const updated = creatingAttempt
@@ -864,6 +916,163 @@ export class CellFlowRepository {
     });
     const result = await this.getIntent(input.aggregate.intent.projectId, input.aggregate.intent.intentId);
     if (!result) throw new Error("Intent disappeared after transaction attach");
+    return result;
+  }
+
+  async recordRpcObservation(input: {
+    aggregate: IntentAggregate;
+    attemptId?: string | null;
+    txHash: string;
+    rpcEndpoint?: string | null;
+    observedStatus: string;
+    blockHash?: string | null;
+    blockNumber?: string | null;
+    tipBlockNumber?: string | null;
+    canonicalBlockHash?: string | null;
+    inputState?: string | null;
+    latencyMs?: number | null;
+    rawObservation?: unknown;
+    observedAt: string;
+  }): Promise<void> {
+    const latencyMs = input.latencyMs === undefined || input.latencyMs === null
+      ? null
+      : Math.max(0, Math.floor(input.latencyMs));
+    await this.sql`
+      insert into rpc_observations (
+        id, project_id, intent_row_id, attempt_id, tx_hash, rpc_endpoint,
+        observed_status, block_hash, block_number, tip_block_number, canonical_block_hash,
+        input_state, latency_ms, raw_observation, observed_at
+      ) values (
+        ${randomUUID()}, ${input.aggregate.intent.projectId}, ${input.aggregate.intent.id}, ${input.attemptId ?? null},
+        ${input.txHash}, ${input.rpcEndpoint ?? null}, ${input.observedStatus}, ${input.blockHash ?? null},
+        ${input.blockNumber ?? null}, ${input.tipBlockNumber ?? null}, ${input.canonicalBlockHash ?? null},
+        ${input.inputState ?? null}, ${latencyMs},
+        ${input.rawObservation === undefined ? null : this.sql.json(toJsonValue(input.rawObservation))},
+        ${new Date(input.observedAt)}
+      )
+    `;
+  }
+
+  async updateCandidateAttempt(input: {
+    aggregate: IntentAggregate;
+    attemptId: string;
+    snapshot: ExecutionSnapshot;
+    conflictType?: ConflictType | null;
+    conflictDetails?: unknown;
+  }): Promise<void> {
+    const disposition = dispositionForSnapshot(input.snapshot);
+    await this.sql`
+      update transaction_attempts
+      set submission_status = ${input.snapshot.submissionStatus},
+          chain_status = ${input.snapshot.chainStatus},
+          workflow_status = ${input.snapshot.workflowStatus},
+          disposition = ${disposition},
+          conflict_type = ${input.conflictType ?? null},
+          conflict_details = ${input.conflictDetails === undefined || input.conflictDetails === null
+            ? null
+            : this.sql.json(toJsonValue(input.conflictDetails))},
+          updated_at = now()
+      where id = ${input.attemptId}
+        and intent_row_id = ${input.aggregate.intent.id}
+    `;
+  }
+
+  async promoteAttemptProjection(input: {
+    aggregate: IntentAggregate;
+    attemptId: string;
+    snapshot: ExecutionSnapshot;
+    eventKind: string;
+    reason: string;
+    rawObservation?: unknown;
+    occurredAt: string;
+    nextReconcileAt?: Date | null;
+  }): Promise<IntentAggregate> {
+    const attempt = input.aggregate.attempts.find((candidate) => candidate.id === input.attemptId);
+    if (!attempt) throw new Error("ATTEMPT_PARENT_CONFLICT");
+    const before = snapshotFromExecution(input.aggregate.execution);
+    const fromStatus = deriveOverallStatus(before);
+    const toStatus = deriveOverallStatus(input.snapshot);
+    const disposition = dispositionForSnapshot(input.snapshot);
+
+    await this.sql.begin(async (tx) => {
+      const updated = await tx`
+        update executions set
+          tx_hash = ${attempt.txHash},
+          input_out_points = ${tx.json(toJsonValue(attempt.inputOutPoints))},
+          input_refs = ${tx.json(toJsonValue(attempt.inputRefs))},
+          submission_status = ${input.snapshot.submissionStatus},
+          chain_status = ${input.snapshot.chainStatus},
+          workflow_status = ${input.snapshot.workflowStatus},
+          confirmation_count = ${input.snapshot.confirmationCount},
+          committed_block_hash = ${input.snapshot.committedBlockHash ?? null},
+          committed_block_number = ${input.snapshot.committedBlockNumber ?? null},
+          rejection_reason = ${input.snapshot.rejectionReason ?? null},
+          submission_error_code = ${attempt.submissionErrorCode},
+          submission_error_type = ${attempt.submissionErrorType},
+          submission_error_details = ${attempt.submissionErrorDetails === null ? null : tx.json(toJsonValue(attempt.submissionErrorDetails))},
+          conflict_type = ${attempt.conflictType},
+          conflict_details = ${attempt.conflictDetails === null ? null : tx.json(toJsonValue(attempt.conflictDetails))},
+          assertion_status = null, assertion_result = null,
+          last_raw_observation = ${input.rawObservation === undefined ? null : tx.json(toJsonValue(input.rawObservation))},
+          last_observed_at = ${new Date(input.occurredAt)},
+          next_reconcile_at = ${input.nextReconcileAt ?? new Date()},
+          reconcile_attempts = 0,
+          version = version + 1, updated_at = now()
+        where id = ${input.aggregate.execution.id}
+          and project_id = ${input.aggregate.intent.projectId}
+          and version = ${input.aggregate.execution.version}
+        returning id
+      `;
+      if (updated.length !== 1) throw new OptimisticConcurrencyError();
+
+      await tx`
+        update transaction_attempts
+        set submission_status = ${input.snapshot.submissionStatus},
+            chain_status = ${input.snapshot.chainStatus},
+            workflow_status = ${input.snapshot.workflowStatus},
+            disposition = ${disposition},
+            updated_at = now()
+        where id = ${attempt.id}
+          and intent_row_id = ${input.aggregate.intent.id}
+      `;
+
+      if (disposition === "CONFIRMED") {
+        await tx`
+          update transaction_attempts
+          set disposition = 'SUPERSEDED', updated_at = now()
+          where intent_row_id = ${input.aggregate.intent.id}
+            and id <> ${attempt.id}
+            and disposition = 'ACTIVE'
+        `;
+      }
+
+      await tx`
+        update intents
+        set active_attempt_id = ${attempt.id},
+            winning_attempt_id = ${disposition === "CONFIRMED" ? attempt.id : input.aggregate.intent.winningAttemptId},
+            updated_at = now()
+        where id = ${input.aggregate.intent.id}
+      `;
+
+      await this.insertEventAndOutbox(tx, {
+        projectId: input.aggregate.intent.projectId,
+        intentRowId: input.aggregate.intent.id,
+        executionId: input.aggregate.execution.id,
+        intentId: input.aggregate.intent.intentId,
+        txHash: attempt.txHash,
+        kind: input.eventKind,
+        fromStatus,
+        toStatus,
+        reason: input.reason,
+        ...(input.rawObservation === undefined ? {} : { rawObservation: input.rawObservation }),
+        occurredAt: new Date(input.occurredAt),
+        snapshot: input.snapshot,
+        assertionStatus: null,
+      });
+    });
+
+    const result = await this.getIntent(input.aggregate.intent.projectId, input.aggregate.intent.intentId);
+    if (!result) throw new Error("Intent disappeared after attempt promotion");
     return result;
   }
 
@@ -1027,6 +1236,15 @@ export class CellFlowRepository {
               updated_at = now()
           where id = ${input.aggregate.intent.activeAttemptId}
             and intent_row_id = ${input.aggregate.intent.id}
+        `;
+      }
+      if (attemptDisposition === "CONFIRMED" && input.aggregate.intent.activeAttemptId) {
+        await tx`
+          update transaction_attempts
+          set disposition = 'SUPERSEDED', updated_at = now()
+          where intent_row_id = ${input.aggregate.intent.id}
+            and id <> ${input.aggregate.intent.activeAttemptId}
+            and disposition = 'ACTIVE'
         `;
       }
       await tx`

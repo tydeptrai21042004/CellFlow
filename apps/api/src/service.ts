@@ -302,6 +302,7 @@ export class CellFlowService {
     inputRefs?: InputRef[],
     attemptKind?: AttemptKind,
     parentAttemptId?: string | null,
+    allowSignedPayloadRevision = false,
   ): Promise<Record<string, unknown>> {
     const txHash = normalizeTxHash(txHashInput);
     const normalizedInputs = inputOutPoints === undefined ? undefined : normalizeOutPointRefs(inputOutPoints);
@@ -354,6 +355,7 @@ export class CellFlowService {
           txHash,
           submissionStatus,
           ...(signedPayloadHashSha256 ? { signedPayloadHashSha256: signedPayloadHashSha256.toLowerCase() } : {}),
+          ...(allowSignedPayloadRevision ? { allowSignedPayloadRevision: true } : {}),
           ...(normalizedInputs ? { inputOutPoints: normalizedInputs } : {}),
           ...(normalizedInputRefs ? { inputRefs: normalizedInputRefs } : {}),
           attemptKind: effectiveAttemptKind,
@@ -387,7 +389,14 @@ export class CellFlowService {
         if (error instanceof Error && error.message === "UNSAFE_ATTEMPT_REPLACEMENT") {
           throw new CellFlowError(
             "INTENT_CONFLICT",
-            "The current attempt may still commit; reconcile it to a terminal/recoverable state before preparing another signed attempt",
+            "The current attempt may still commit. Use RBF_REPLACEMENT only for a genuine shared-input CKB replacement, otherwise reconcile the current attempt first",
+            409,
+          );
+        }
+        if (error instanceof Error && error.message === "RBF_INPUTS_DO_NOT_OVERLAP") {
+          throw new CellFlowError(
+            "INTENT_CONFLICT",
+            "RBF_REPLACEMENT must share at least one input OutPoint with the active parent attempt",
             409,
           );
         }

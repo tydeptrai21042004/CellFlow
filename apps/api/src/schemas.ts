@@ -46,6 +46,7 @@ export const txHashSchema = z.object({ txHash: z.string() });
 export const prepareTransactionSchema = z.object({
   txHash: z.string(),
   signedPayloadHashSha256: z.string().regex(/^0x[0-9a-fA-F]{64}$/).transform((value) => value.toLowerCase()).optional(),
+  allowSignedPayloadRevision: z.boolean().default(false),
   inputOutPoints: z.array(outPointSchema).max(1024).default([]),
   inputRefs: z.array(inputRefSchema).max(1024).default([]),
   attemptKind: z.enum(["INITIAL", "REBUILD", "RBF_REPLACEMENT", "MANUAL_RETRY"]).optional(),

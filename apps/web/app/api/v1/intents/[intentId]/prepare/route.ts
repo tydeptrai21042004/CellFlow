@@ -7,7 +7,7 @@ export async function POST(request: Request, context: { params: Promise<{ intent
   try {
     const project = await projectFromRequest(request, "write");
     const { intentId } = await context.params;
-    const { txHash, signedPayloadHashSha256, inputOutPoints, inputRefs, attemptKind, parentAttemptId } = prepareTransactionSchema.parse(await readJson(request));
+    const { txHash, signedPayloadHashSha256, allowSignedPayloadRevision, inputOutPoints, inputRefs, attemptKind, parentAttemptId } = prepareTransactionSchema.parse(await readJson(request));
     const intent = await service.attachTransaction(
       project,
       intentId,
@@ -18,6 +18,7 @@ export async function POST(request: Request, context: { params: Promise<{ intent
       inputRefs,
       attemptKind,
       parentAttemptId,
+      allowSignedPayloadRevision,
     );
     return Response.json({ intent });
   } catch (error) {

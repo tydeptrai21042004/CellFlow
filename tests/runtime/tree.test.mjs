@@ -5,6 +5,7 @@ import { access } from "node:fs/promises";
 const required = [
   "package.json",
   ".env.example",
+  ".env.testnet.example",
   "vercel.json",
   "packages/core/src/state-machine.ts",
   "packages/db/migrations/001_init.sql",
