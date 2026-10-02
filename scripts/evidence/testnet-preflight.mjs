@@ -1,7 +1,12 @@
 #!/usr/bin/env node
+import { setDefaultResultOrder } from "node:dns";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
+
+if ((process.env.CELLFLOW_TESTNET_IPV4_FIRST ?? "true").toLowerCase() !== "false") {
+  setDefaultResultOrder("ipv4first");
+}
 
 const outDir = resolve(process.env.CELLFLOW_EVIDENCE_DIR || "evidence/testnet/generated");
 const primary = process.env.CKB_RPC_URL?.trim();

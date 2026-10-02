@@ -1,7 +1,12 @@
 #!/usr/bin/env node
+import { setDefaultResultOrder } from "node:dns";
 import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { CellFlowClient } from "@cellflow/ccc";
+
+if ((process.env.CELLFLOW_TESTNET_IPV4_FIRST ?? "true").toLowerCase() !== "false") {
+  setDefaultResultOrder("ipv4first");
+}
 
 const endpoint = process.env.CELLFLOW_URL?.trim();
 const apiKey = process.env.CELLFLOW_API_KEY?.trim();
@@ -14,7 +19,13 @@ if (!endpoint || !apiKey || !intentId || !output) {
   throw new Error("CELLFLOW_URL, CELLFLOW_API_KEY, CELLFLOW_RECOVERY_INTENT_ID and CELLFLOW_RECOVERY_OUTPUT are required");
 }
 
-const flow = new CellFlowClient({ endpoint, apiKey });
+const flow = new CellFlowClient({
+  endpoint,
+  apiKey,
+  transportRetryAttempts: Math.max(1, Number(process.env.CELLFLOW_HTTP_REQUEST_ATTEMPTS || 5)),
+  transportRetryDelayMs: Math.max(100, Number(process.env.CELLFLOW_HTTP_RETRY_DELAY_MS || 1_000)),
+  requestTimeoutMs: Math.max(1_000, Number(process.env.CELLFLOW_HTTP_TIMEOUT_MS || 20_000)),
+});
 const startedAt = new Date().toISOString();
 const deadline = Date.now() + timeoutMs;
 const observations = [];

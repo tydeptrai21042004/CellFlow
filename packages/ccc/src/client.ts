@@ -10,6 +10,10 @@ import type {
 export interface CellFlowClientOptions {
   endpoint: string;
   apiKey: string;
+  /** Retry only transport-level fetch failures. Valid HTTP/API responses are never retried here. */
+  transportRetryAttempts?: number;
+  transportRetryDelayMs?: number;
+  requestTimeoutMs?: number;
 }
 
 export interface TrackInput {
@@ -71,24 +75,46 @@ export class CellFlowClient {
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const response = await fetch(`${this.endpoint}${path}`, {
-      ...init,
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${this.options.apiKey}`,
-        ...(init.headers ?? {}),
-      },
-    });
-    const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-    if (!response.ok) {
-      const error = (payload.error ?? {}) as Record<string, unknown>;
-      throw new CellFlowHttpError(
-        response.status,
-        typeof error.code === "string" ? error.code : "HTTP_ERROR",
-        typeof error.message === "string" ? error.message : `CellFlow request failed: HTTP ${response.status}`,
-      );
+    const attempts = Math.max(1, Math.trunc(this.options.transportRetryAttempts ?? 1));
+    const retryDelayMs = Math.max(0, Math.trunc(this.options.transportRetryDelayMs ?? 500));
+    const requestTimeoutMs = Math.max(0, Math.trunc(this.options.requestTimeoutMs ?? 0));
+    let lastTransportError: unknown = null;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        const response = await fetch(`${this.endpoint}${path}`, {
+          ...init,
+          signal: init.signal ?? (requestTimeoutMs > 0 ? AbortSignal.timeout(requestTimeoutMs) : undefined),
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${this.options.apiKey}`,
+            ...(init.headers ?? {}),
+          },
+        });
+        const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+        if (!response.ok) {
+          const error = (payload.error ?? {}) as Record<string, unknown>;
+          // A real HTTP/API response is authoritative. Do not retry it as a transport failure.
+          throw new CellFlowHttpError(
+            response.status,
+            typeof error.code === "string" ? error.code : "HTTP_ERROR",
+            typeof error.message === "string" ? error.message : `CellFlow request failed: HTTP ${response.status}`,
+          );
+        }
+        return payload as T;
+      } catch (error) {
+        if (error instanceof CellFlowHttpError) throw error;
+        lastTransportError = error;
+        if (attempt >= attempts) break;
+        if (retryDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, retryDelayMs * attempt));
+        }
+      }
     }
-    return payload as T;
+
+    throw lastTransportError instanceof Error
+      ? lastTransportError
+      : new Error(`CellFlow transport failed for ${path}`);
   }
 
   async track(input: TrackInput): Promise<IntentView> {

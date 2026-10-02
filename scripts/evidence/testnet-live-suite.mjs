@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { setDefaultResultOrder } from "node:dns";
 import { createHash, createHmac } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { ccc } from "@ckb-ccc/core";
 import {
@@ -12,6 +13,10 @@ import {
   prepareTrackedTransaction,
 } from "@cellflow/ccc";
 import { signedPayloadFingerprintSha256 } from "@cellflow/core";
+
+if ((process.env.CELLFLOW_TESTNET_IPV4_FIRST ?? "true").toLowerCase() !== "false") {
+  setDefaultResultOrder("ipv4first");
+}
 
 const TESTNET_CHAIN = "ckb_testnet";
 const DEFAULT_CELLFLOW_URL = "https://cellflow-brown.vercel.app";
@@ -34,6 +39,8 @@ const rpcUrls = unique([
 ]);
 const timeoutMs = numberEnv("CELLFLOW_TESTNET_TIMEOUT_MS", 900_000);
 const pollMs = numberEnv("CELLFLOW_TESTNET_POLL_MS", 5_000);
+const rpcRequestAttempts = Math.max(1, numberEnv("CKB_RPC_REQUEST_ATTEMPTS", 4));
+const rpcRetryDelayMs = Math.max(100, numberEnv("CKB_RPC_RETRY_DELAY_MS", 1_000));
 const propagationDelayMs = numberEnv("CELLFLOW_TESTNET_PROPAGATION_DELAY_MS", 1_500);
 const contentionGraceMs = numberEnv("CELLFLOW_CONTENTION_GRACE_MS", 30_000);
 const sameFeeRate = BigInt(numberEnv("CELLFLOW_TESTNET_SAME_FEE_RATE", 1_000));
@@ -44,11 +51,27 @@ const walletSeedCapacityCkb = process.env.CELLFLOW_TESTNET_WALLET_SEED_CKB?.trim
 const ambiguousCapacityCkb = process.env.CELLFLOW_TESTNET_AMBIGUOUS_CKB?.trim() || "100";
 const minBalanceCkb = process.env.CELLFLOW_TESTNET_MIN_BALANCE_CKB?.trim() || "250";
 const strictRbf = (process.env.CELLFLOW_TESTNET_REQUIRE_RBF ?? "true").toLowerCase() !== "false";
+const resumeLiveScenarios = (process.env.CELLFLOW_TESTNET_RESUME_SCENARIOS ?? "true").toLowerCase() !== "false";
+const walletSetupAttempts = Math.max(1, numberEnv("CELLFLOW_TESTNET_WALLET_SETUP_ATTEMPTS", 6));
+const walletSetupRetryDelayMs = Math.max(500, numberEnv("CELLFLOW_TESTNET_WALLET_SETUP_RETRY_DELAY_MS", 3_000));
 const runId = `cellflow-live-${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`;
 const outDir = resolve(process.env.CELLFLOW_EVIDENCE_DIR || `evidence/testnet/live/${runId}`);
 
-const flow = new CellFlowClient({ endpoint, apiKey });
-const primaryOwner = ccc.ClientPublicTestnet.open({ urls: rpcUrls });
+const cellFlowHttpAttempts = Math.max(1, numberEnv("CELLFLOW_HTTP_REQUEST_ATTEMPTS", 5));
+const cellFlowHttpRetryDelayMs = Math.max(100, numberEnv("CELLFLOW_HTTP_RETRY_DELAY_MS", 1_000));
+const cellFlowHttpTimeoutMs = Math.max(1_000, numberEnv("CELLFLOW_HTTP_TIMEOUT_MS", 20_000));
+const flow = new CellFlowClient({
+  endpoint,
+  apiKey,
+  transportRetryAttempts: cellFlowHttpAttempts,
+  transportRetryDelayMs: cellFlowHttpRetryDelayMs,
+  requestTimeoutMs: cellFlowHttpTimeoutMs,
+});
+// @ckb-ccc/core has had two public-client construction APIs across releases.
+// CellFlow pins 1.19.1, where ClientPublicTestnet is constructor-based, while
+// newer CCC releases expose Owner-based .open({ urls }). Support both so the
+// evidence harness remains reproducible with the repository lockfile.
+const primaryOwner = openPublicTestnetClient(rpcUrls);
 const primaryClient = primaryOwner.value;
 const signerA = new ccc.SignerCkbPrivateKey(primaryClient, privateKeyA);
 const signerB = new ccc.SignerCkbPrivateKey(primaryClient, privateKeyB);
@@ -96,14 +119,26 @@ try {
   const alwaysSuccessLock = await ccc.Script.fromKnownScript(primaryClient, ccc.KnownScript.AlwaysSuccess, "0x");
   const knownAlwaysSuccess = await primaryClient.getKnownScript(ccc.KnownScript.AlwaysSuccess);
 
-  scenarioResults.push(await runSameFeeApplicationRace({
-    signerA, signerB, addressA, addressB, alwaysSuccessLock, knownAlwaysSuccess,
-  }));
-  scenarioResults.push(await runHigherFeeRbf({
-    signerA, signerB, addressA, addressB, alwaysSuccessLock, knownAlwaysSuccess,
-  }));
-  scenarioResults.push(await runWalletInputRace({ signer: signerA, address: addressA }));
-  scenarioResults.push(await runAmbiguousRecovery({ signer: signerA, address: addressA }));
+  scenarioResults.push(await runOrResumeScenario(
+    "10-two-wallet-same-fee-race.json",
+    "two-wallet-same-fee-application-contention",
+    () => runSameFeeApplicationRace({ signerA, signerB, addressA, addressB, alwaysSuccessLock, knownAlwaysSuccess }),
+  ));
+  scenarioResults.push(await runOrResumeScenario(
+    "20-two-wallet-higher-fee-rbf.json",
+    "two-wallet-higher-fee-rbf",
+    () => runHigherFeeRbf({ signerA, signerB, addressA, addressB, alwaysSuccessLock, knownAlwaysSuccess }),
+  ));
+  scenarioResults.push(await runOrResumeScenario(
+    "30-wallet-input-race.json",
+    "wallet-funding-input-conflict",
+    () => runWalletInputRace({ signer: signerA, address: addressA }),
+  ));
+  scenarioResults.push(await runOrResumeScenario(
+    "40-ambiguous-recovery.json",
+    "real-broadcast-injected-lost-response-recovery",
+    () => runAmbiguousRecovery({ signer: signerA, address: addressA }),
+  ));
 
   const projectEvidence = await fetchJson(`${endpoint}/api/v1/project-evidence`, {
     method: "POST",
@@ -124,6 +159,7 @@ try {
     strictRbf,
   });
   await saveJson("99-summary.json", summary);
+  await rm(resolve(outDir, "99-failure.json"), { force: true }).catch(() => undefined);
   await writeChecksums();
   await writeReadme(summary);
 
@@ -144,6 +180,38 @@ try {
   process.exitCode = 2;
 } finally {
   await primaryOwner.dispose().catch(() => undefined);
+}
+
+
+function openPublicTestnetClient(urls) {
+  if (!Array.isArray(urls) || urls.length === 0) {
+    throw new Error("At least one CKB Testnet RPC URL is required");
+  }
+
+  if (typeof ccc.ClientPublicTestnet?.open === "function") {
+    const owner = ccc.ClientPublicTestnet.open({ urls });
+    return {
+      value: owner.value,
+      dispose: async () => {
+        if (typeof owner.dispose === "function") await owner.dispose();
+      },
+    };
+  }
+
+  // @ckb-ccc/core 1.19.1 path. Multi-RPC independence is still verified by
+  // testnet-preflight.mjs; the transaction client uses the configured primary.
+  const client = new ccc.ClientPublicTestnet(urls[0]);
+  return {
+    value: client,
+    dispose: async () => {
+      for (const method of ["dispose", "close", "disconnect"]) {
+        if (typeof client?.[method] === "function") {
+          await client[method]().catch(() => undefined);
+          break;
+        }
+      }
+    },
+  };
 }
 
 async function runSameFeeApplicationRace(ctx) {
@@ -303,21 +371,36 @@ async function runWalletInputRace({ signer, address }) {
   const name = "wallet-funding-input-conflict";
   const started = new Date().toISOString();
   const self = await addressLock(address);
-  const seedTx = ccc.Transaction.from({ outputs: [{ lock: self, capacity: ccc.fixedPointFrom(walletSeedCapacityCkb) }] });
-  await seedTx.completeInputsByCapacity(signer);
-  await seedTx.completeFeeBy(signer, sameFeeRate);
-  const seedHash = await signer.sendTransaction(seedTx);
-  await waitForCommitted(seedHash);
-  const walletOutPoint = { txHash: String(seedHash).toLowerCase(), index: 0 };
+  const seed = await createWalletSeedCellWithRetry(signer, self);
+  const seedHash = seed.txHash;
+  const walletOutPoint = { txHash: seedHash, index: 0 };
 
   const txA = await buildWalletOnlySpend(signer, self, walletOutPoint, sameFeeRate, "0xc1");
   const txB = await buildWalletOnlySpend(signer, self, walletOutPoint, sameFeeRate, "0xc2");
   const intentA = `${runId}:wallet-race:a`;
   const intentB = `${runId}:wallet-race:b`;
   const metadata = { runId, scenario: name, walletOutPoint };
+  // This scenario deliberately pre-constructs the wallet seed input before signing.
+  // classifyInputRefs() conservatively labels any pre-existing, non-application
+  // input as OTHER, so declare the semantic wallet role explicitly here. Without
+  // this, reconciliation can prove INPUT_SPENT but cannot distinguish wallet
+  // funding from application state and correctly falls back to MANUAL_REVIEW.
+  const walletInputRefs = [{ role: "WALLET_FUNDING", outPoint: walletOutPoint }];
 
-  const trackedA = await prepareTrackedTransaction({ signer, transaction: txA, flow, intentId: intentA, metadata, expectedCells: [] });
-  const preparedB = await prepareManual(signer, txB, intentB, { metadata, expectedCells: [] });
+  const trackedA = await prepareTrackedTransaction({
+    signer,
+    transaction: txA,
+    flow,
+    intentId: intentA,
+    metadata,
+    expectedCells: [],
+    inputRefs: walletInputRefs,
+  });
+  const preparedB = await prepareManual(signer, txB, intentB, {
+    metadata,
+    expectedCells: [],
+    inputRefs: walletInputRefs,
+  });
   const hashA = await trackedA.broadcast();
   await sleep(propagationDelayMs);
   const submitB = await submitPreparedManually(preparedB);
@@ -341,6 +424,40 @@ async function runWalletInputRace({ signer, address }) {
   };
   await saveJson("30-wallet-input-race.json", { result, evidence });
   return result;
+}
+
+async function createWalletSeedCellWithRetry(signer, lock) {
+  const staleInputFailures = [];
+  for (let attempt = 1; attempt <= walletSetupAttempts; attempt += 1) {
+    const seedTx = ccc.Transaction.from({
+      outputs: [{ lock, capacity: ccc.fixedPointFrom(walletSeedCapacityCkb) }],
+    });
+    try {
+      // Rebuild from scratch every time so CCC re-collects currently live wallet
+      // cells instead of reusing an OutPoint that went stale while an RPC/indexer
+      // caught up with earlier scenarios.
+      await seedTx.completeInputsByCapacity(signer);
+      await seedTx.completeFeeBy(signer, sameFeeRate);
+      const txHash = String(await signer.sendTransaction(seedTx)).toLowerCase();
+      await waitForCommitted(txHash);
+      return { txHash, attempts: attempt, staleInputFailures };
+    } catch (error) {
+      if (!isStaleWalletOutPointError(error) || attempt >= walletSetupAttempts) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      staleInputFailures.push({ attempt, message });
+      console.warn(
+        `WARN: wallet seed attempt ${attempt}/${walletSetupAttempts} selected a stale/spent OutPoint; ` +
+        `waiting ${walletSetupRetryDelayMs}ms and recollecting wallet inputs.`,
+      );
+      await sleep(walletSetupRetryDelayMs);
+    }
+  }
+  throw new Error("Unable to create a fresh wallet seed Cell after recollecting wallet inputs");
+}
+
+function isStaleWalletOutPointError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /TransactionFailedToResolve|Resolve failed\s+Unknown\(OutPoint|Unknown\(OutPoint/i.test(message);
 }
 
 async function runAmbiguousRecovery({ signer, address }) {
@@ -400,6 +517,23 @@ async function runAmbiguousRecovery({ signer, address }) {
   return result;
 }
 
+async function runOrResumeScenario(fileName, expectedName, runScenario) {
+  const path = resolve(outDir, fileName);
+  if (resumeLiveScenarios) {
+    try {
+      const existing = JSON.parse(await readFile(path, "utf8"));
+      if (existing?.result?.passed === true && existing.result.name === expectedName) {
+        console.log(`==> Live scenario already passed — reusing ${fileName}`);
+        artifactFiles.push(path);
+        return { ...existing.result, resumedFromArtifact: true };
+      }
+    } catch {
+      // Missing, partial, or invalid artifact: execute the scenario normally.
+    }
+  }
+  return runScenario();
+}
+
 async function createSharedStateCell(signer, lock, data) {
   const tx = ccc.Transaction.from({
     outputs: [{ lock, capacity: ccc.fixedPointFrom(stateCapacityCkb) }],
@@ -434,8 +568,13 @@ async function buildWalletOnlySpend(signer, lock, walletOutPoint, feeRate, marke
   return tx;
 }
 
-async function prepareManual(signer, transaction, intentId, { metadata, expectedCells, applicationInputs = [] }) {
-  const described = await signAndDescribe(signer, transaction, applicationInputs);
+async function prepareManual(
+  signer,
+  transaction,
+  intentId,
+  { metadata, expectedCells, applicationInputs = [], inputRefs = [] },
+) {
+  const described = await signAndDescribe(signer, transaction, applicationInputs, inputRefs);
   await flow.prepare({
     intentId,
     txHash: described.txHash,
@@ -450,14 +589,14 @@ async function prepareManual(signer, transaction, intentId, { metadata, expected
   return prepared;
 }
 
-async function signAndDescribe(signer, transaction, applicationInputs = []) {
+async function signAndDescribe(signer, transaction, applicationInputs = [], explicitInputRefs = []) {
   const originalInputs = extractInputOutPoints(transaction);
   const signed = await signer.signTransaction(transaction);
   const txHash = String(signed.hash()).toLowerCase();
   const signedPayloadHashSha256 = await signedPayloadFingerprintSha256(signed);
   if (!signedPayloadHashSha256) throw new Error("Unable to compute signed-payload fingerprint");
   const inputOutPoints = extractInputOutPoints(signed);
-  const inputRefs = classifyInputRefs(inputOutPoints, [], applicationInputs, originalInputs);
+  const inputRefs = classifyInputRefs(inputOutPoints, explicitInputRefs, applicationInputs, originalInputs);
   return { signed, txHash, signedPayloadHashSha256, inputOutPoints, inputRefs };
 }
 
@@ -505,7 +644,7 @@ async function rawSubmit(signer, signed) {
 async function waitForCommitted(txHash, limitMs = timeoutMs) {
   const deadline = Date.now() + limitMs;
   while (Date.now() < deadline) {
-    const observation = await rpc(rpcUrls[0], "get_transaction", [txHash]);
+    const observation = await rpcWithFailover("get_transaction", [txHash]);
     const status = observation?.tx_status?.status ?? observation?.txStatus?.status ?? "unknown";
     if (status === "committed") {
       return {
@@ -579,23 +718,84 @@ async function verifyRpcIdentities(urls) {
   return results;
 }
 
-async function rpc(url, method, params = []) {
+async function rpc(url, method, params = [], options = {}) {
+  const attempts = Math.max(1, Number(options.attempts ?? rpcRequestAttempts));
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await rpcOnce(url, method, params);
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableRpcTransportError(error) || attempt >= attempts) throw error;
+      await sleep(rpcRetryDelayMs * attempt);
+    }
+  }
+
+  throw lastError ?? new Error(`RPC ${method} failed for ${url}`);
+}
+
+async function rpcWithFailover(method, params = []) {
+  const failures = [];
+
+  // Rotate the starting endpoint between calls so a flaky primary does not
+  // monopolize every polling loop. All methods used through this helper are
+  // read-only chain observations. Transaction submission still goes through CCC.
+  const offset = Math.floor(Date.now() / Math.max(1, pollMs)) % rpcUrls.length;
+  const ordered = [...rpcUrls.slice(offset), ...rpcUrls.slice(0, offset)];
+
+  for (const url of ordered) {
+    try {
+      return await rpc(url, method, params);
+    } catch (error) {
+      failures.push(`${url}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  throw new Error(`All configured CKB Testnet RPC endpoints failed for ${method}: ${failures.join(" | ")}`);
+}
+
+async function rpcOnce(url, method, params = []) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), numberEnv("CKB_RPC_TIMEOUT_MS", 15_000));
   try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json", "user-agent": "CellFlow-Testnet-Evidence/0.3" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-      signal: controller.signal,
-    });
-    if (!response.ok) throw new Error(`RPC HTTP ${response.status}`);
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", "user-agent": "CellFlow-Testnet-Evidence/0.3" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      const wrapped = new Error(`RPC transport failed for ${url}: ${error instanceof Error ? error.message : String(error)}`);
+      wrapped.cause = error;
+      wrapped.rpcRetryable = true;
+      throw wrapped;
+    }
+
+    if (!response.ok) {
+      const error = new Error(`RPC HTTP ${response.status} from ${url}`);
+      error.rpcRetryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
+      throw error;
+    }
+
     const payload = await response.json();
-    if (payload.error) throw new Error(`RPC ${payload.error.code}: ${payload.error.message}`);
+    if (payload.error) {
+      // A valid JSON-RPC rejection is an application/protocol response, not a
+      // transport outage. Do not hide or retry it as endpoint instability.
+      const error = new Error(`RPC ${payload.error.code}: ${payload.error.message}`);
+      error.rpcRetryable = false;
+      throw error;
+    }
     return payload.result;
   } finally {
     clearTimeout(timer);
   }
+}
+
+function isRetryableRpcTransportError(error) {
+  return Boolean(error && typeof error === "object" && error.rpcRetryable === true);
 }
 
 async function addressLock(address) {
@@ -722,14 +922,28 @@ async function writeReadme(summary) {
 }
 
 async function fetchJson(url, init = {}, allowNonJson = false) {
-  const response = await fetch(url, init);
-  const text = await response.text();
-  let body = null;
-  try { body = text ? JSON.parse(text) : null; } catch {
-    if (!allowNonJson) throw new Error(`Expected JSON from ${url}, got HTTP ${response.status}: ${text.slice(0, 300)}`);
-    body = { raw: text };
+  let lastTransportError = null;
+  for (let attempt = 1; attempt <= cellFlowHttpAttempts; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        ...init,
+        signal: init.signal ?? AbortSignal.timeout(cellFlowHttpTimeoutMs),
+      });
+      const text = await response.text();
+      let body = null;
+      try { body = text ? JSON.parse(text) : null; } catch {
+        if (!allowNonJson) throw new Error(`Expected JSON from ${url}, got HTTP ${response.status}: ${text.slice(0, 300)}`);
+        body = { raw: text };
+      }
+      // HTTP responses are real application/proxy responses, not transport outages.
+      return { responseOk: response.ok, status: response.status, body };
+    } catch (error) {
+      lastTransportError = error;
+      if (attempt >= cellFlowHttpAttempts) break;
+      await sleep(cellFlowHttpRetryDelayMs * attempt);
+    }
   }
-  return { responseOk: response.ok, status: response.status, body };
+  throw lastTransportError instanceof Error ? lastTransportError : new Error(`CellFlow HTTP transport failed for ${url}`);
 }
 
 function authHeaders() {
