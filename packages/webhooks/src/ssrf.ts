@@ -22,10 +22,15 @@ export function isBlockedIp(ip: string): boolean {
     ].some(([base, prefix]) => inV4Range(ip, String(base), Number(prefix)));
   }
   if (family === 6) {
-    const value = ip.toLowerCase();
-    const mappedDotted = value.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1];
-    if (mappedDotted && isIP(mappedDotted) === 4) return isBlockedIp(mappedDotted);
-    const mappedHex = value.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    // WHATWG URL canonicalizes expanded IPv6 literals and embedded IPv4 addresses.
+    // Without normalization 0:0:0:0:0:ffff:7f00:1 can evade the mapped-v4 check.
+    let value: string;
+    try {
+      value = new URL(`http://[${ip}]/`).hostname.slice(1, -1).toLowerCase();
+    } catch {
+      return true;
+    }
+    const mappedHex = value.match(/^::(?:(?:ffff:|ffff:0:))?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
     if (mappedHex?.[1] && mappedHex[2]) {
       const high = Number.parseInt(mappedHex[1], 16);
       const low = Number.parseInt(mappedHex[2], 16);
@@ -35,7 +40,9 @@ export function isBlockedIp(ip: string): boolean {
     return (
       value === "::" || value === "::1" || value.startsWith("fc") || value.startsWith("fd") ||
       /^fe[89ab]/.test(value) || value.startsWith("ff") || value.startsWith("2001:db8") ||
-      value.startsWith("2002:") || value.startsWith("2001:0000:") || value.startsWith("64:ff9b::")
+      value.startsWith("2002:") || value.startsWith("2001::") || value.startsWith("2001:0:") ||
+      value.startsWith("2001:10:") || value.startsWith("2001:20:") ||
+      value.startsWith("64:ff9b::") || value.startsWith("64:ff9b:1:") || value.startsWith("3fff:")
     );
   }
   return true;
@@ -61,14 +68,21 @@ export async function validateWebhookDestination(
   if (url.username || url.password) {
     throw new CellFlowError("WEBHOOK_URL_INVALID", "Webhook URL must not contain credentials", 400);
   }
-  const isLocalDev = options.allowHttpLocalhost && ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
+  const hostname = url.hostname.replace(/^\[|\]$/g, "");
+  const isLocalDev = options.allowHttpLocalhost === true && ["localhost", "127.0.0.1", "::1"].includes(hostname);
   if (url.protocol !== "https:" && !(isLocalDev && url.protocol === "http:")) {
     throw new CellFlowError("WEBHOOK_URL_INVALID", "Webhook URL must use HTTPS", 400);
   }
 
-  const records = await lookup(url.hostname, { all: true, verbatim: true });
+  const records = await lookup(hostname, { all: true, verbatim: true });
   if (records.length === 0) {
     throw new CellFlowError("WEBHOOK_URL_INVALID", "Webhook hostname did not resolve", 400);
+  }
+  if (isLocalDev && records.some((record) => !(
+    record.address === "::1" ||
+    (record.family === 4 && record.address.startsWith("127."))
+  ))) {
+    throw new CellFlowError("WEBHOOK_URL_INVALID", "Local webhook hostname must resolve only to loopback", 400);
   }
   if (!isLocalDev && records.some((record) => isBlockedIp(record.address))) {
     throw new CellFlowError("WEBHOOK_URL_INVALID", "Webhook hostname resolves to a blocked address", 400);

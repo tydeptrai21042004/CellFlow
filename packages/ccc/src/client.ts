@@ -67,48 +67,96 @@ export class CellFlowHttpError extends Error {
   }
 }
 
+/** Keep untrusted client options finite and bounded (NaN would otherwise disable retries/timeouts). */
+function boundedMilliseconds(value: number | undefined, fallback: number, maximum: number): number {
+  return value !== undefined && Number.isFinite(value)
+    ? Math.min(maximum, Math.max(0, Math.trunc(value)))
+    : fallback;
+}
+
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException("Request cancelled", "AbortError");
+}
+
+function delayUnlessAborted(ms: number, signal: AbortSignal | null | undefined): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortReason(signal));
+  if (ms <= 0) return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    const cleanup = () => signal?.removeEventListener("abort", onAbort);
+    const onAbort = () => {
+      clearTimeout(timer);
+      cleanup();
+      reject(abortReason(signal!));
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export class CellFlowClient {
   readonly endpoint: string;
 
   constructor(private readonly options: CellFlowClientOptions) {
-    this.endpoint = options.endpoint.replace(/\/$/, "");
+    this.endpoint = options.endpoint.replace(/\/+$/, "");
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const attempts = Math.max(1, Math.trunc(this.options.transportRetryAttempts ?? 1));
-    const retryDelayMs = Math.max(0, Math.trunc(this.options.transportRetryDelayMs ?? 500));
-    const requestTimeoutMs = Math.max(0, Math.trunc(this.options.requestTimeoutMs ?? 0));
+    const attempts = Math.max(1, boundedMilliseconds(this.options.transportRetryAttempts, 1, 6));
+    const retryDelayMs = boundedMilliseconds(this.options.transportRetryDelayMs, 500, 15_000);
+    // Finite default prevents permanently hung UI/CLI requests; 0 explicitly disables the timeout.
+    const requestTimeoutMs = boundedMilliseconds(this.options.requestTimeoutMs, 30_000, 300_000);
     let lastTransportError: unknown = null;
 
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      if (init.signal?.aborted) throw abortReason(init.signal);
+      const timeout = requestTimeoutMs > 0 ? AbortSignal.timeout(requestTimeoutMs) : null;
+      const activeSignal = init.signal && timeout
+        ? AbortSignal.any([init.signal, timeout])
+        : init.signal ?? timeout;
+      const headers = new Headers(init.headers);
+      if (!headers.has("content-type")) headers.set("content-type", "application/json");
+      // The configured credential cannot be silently overridden by an arbitrary HeadersInit form.
+      headers.set("authorization", `Bearer ${this.options.apiKey}`);
+
       try {
         const response = await fetch(`${this.endpoint}${path}`, {
           ...init,
-          signal: init.signal ?? (requestTimeoutMs > 0 ? AbortSignal.timeout(requestTimeoutMs) : undefined),
-          headers: {
-            "content-type": "application/json",
-            authorization: `Bearer ${this.options.apiKey}`,
-            ...(init.headers ?? {}),
-          },
+          signal: activeSignal ?? null,
+          headers,
         });
-        const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+        // A received HTTP response is authoritative, including malformed successful JSON.
+        // Invalid JSON must not trigger a replay of an operation that the server may have applied.
+        let payload: unknown;
+        try {
+          payload = await response.json();
+        } catch {
+          if (activeSignal?.aborted) throw abortReason(activeSignal);
+          if (!response.ok) payload = {};
+          else if (response.status === 204 || response.status === 205) payload = {};
+          else throw new CellFlowHttpError(502, "INVALID_RESPONSE", "CellFlow returned invalid JSON");
+        }
         if (!response.ok) {
-          const error = (payload.error ?? {}) as Record<string, unknown>;
-          // A real HTTP/API response is authoritative. Do not retry it as a transport failure.
+          const body = payload && typeof payload === "object" && !Array.isArray(payload)
+            ? payload as Record<string, unknown> : {};
+          const rawError = body.error;
+          const details = rawError && typeof rawError === "object" && !Array.isArray(rawError)
+            ? rawError as Record<string, unknown> : {};
           throw new CellFlowHttpError(
             response.status,
-            typeof error.code === "string" ? error.code : "HTTP_ERROR",
-            typeof error.message === "string" ? error.message : `CellFlow request failed: HTTP ${response.status}`,
+            typeof details.code === "string" ? details.code : "HTTP_ERROR",
+            typeof details.message === "string" ? details.message : `CellFlow request failed: HTTP ${response.status}`,
           );
         }
         return payload as T;
       } catch (error) {
-        if (error instanceof CellFlowHttpError) throw error;
+        if (error instanceof CellFlowHttpError || activeSignal?.aborted) throw error;
         lastTransportError = error;
         if (attempt >= attempts) break;
-        if (retryDelayMs > 0) {
-          await new Promise((resolve) => setTimeout(resolve, retryDelayMs * attempt));
-        }
+        // A caller cancellation also interrupts the retry backoff.
+        await delayUnlessAborted(Math.min(30_000, retryDelayMs * attempt), init.signal);
       }
     }
 
@@ -216,10 +264,11 @@ export class CellFlowClient {
     return current;
   }
 
-  async get(intentId: string): Promise<IntentView | null> {
+  async get(intentId: string, init: RequestInit = {}): Promise<IntentView | null> {
     try {
       const result = await this.request<{ intent: IntentView }>(
         `/api/v1/intents/${encodeURIComponent(intentId)}`,
+        init,
       );
       return result.intent;
     } catch (error) {
@@ -230,14 +279,15 @@ export class CellFlowClient {
 
   async wait(
     intentId: string,
-    options: { timeoutMs?: number; intervalMs?: number; until?: "committed" | "confirmed" | "verified" } = {},
+    options: { timeoutMs?: number; intervalMs?: number; until?: "committed" | "confirmed" | "verified"; signal?: AbortSignal } = {},
   ): Promise<IntentView> {
-    const timeoutMs = options.timeoutMs ?? 120_000;
-    const intervalMs = options.intervalMs ?? 2_500;
+    const timeoutMs = boundedMilliseconds(options.timeoutMs, 120_000, 24 * 60 * 60 * 1000);
+    const intervalMs = Math.max(100, boundedMilliseconds(options.intervalMs, 2_500, 60_000));
     const until = options.until ?? "confirmed";
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const current = await this.get(intentId);
+      if (options.signal?.aborted) throw abortReason(options.signal);
+      const current = await this.get(intentId, { signal: options.signal ?? null });
       if (!current) throw new Error(`Intent ${intentId} was not found`);
       if (["REJECTED", "NODE_REJECTED", "CONFLICTED", "EXPIRED"].includes(current.status)) {
         return current;
@@ -245,9 +295,10 @@ export class CellFlowClient {
       if (until === "committed" && ["COMMITTED", "CONFIRMED"].includes(current.status)) return current;
       if (until === "confirmed" && current.status === "CONFIRMED") return current;
       if (until === "verified" && current.status === "CONFIRMED" && current.assertionStatus === "VERIFIED") return current;
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      await delayUnlessAborted(Math.min(intervalMs, Math.max(0, deadline - Date.now())), options.signal);
     }
-    const current = await this.get(intentId);
+    if (options.signal?.aborted) throw abortReason(options.signal);
+    const current = await this.get(intentId, { signal: options.signal ?? null });
     if (!current) throw new Error(`Intent ${intentId} was not found`);
     return current;
   }

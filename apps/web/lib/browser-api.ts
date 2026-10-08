@@ -3,23 +3,37 @@ export async function jsonRequest<T = Record<string, unknown>>(
   apiKey?: string,
   init: RequestInit = {},
 ): Promise<T> {
+  // Credentials must never be sent to absolute, protocol-relative or non-API URLs.
+  if (!path.startsWith("/api/") || path.startsWith("//")) {
+    throw new Error("jsonRequest requires a same-origin /api/ path");
+  }
   const requestId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const headers = new Headers(init.headers);
+  if (!headers.has("content-type")) headers.set("content-type", "application/json");
+  if (!headers.has("x-request-id")) headers.set("x-request-id", requestId);
+  if (apiKey) headers.set("authorization", `Bearer ${apiKey}`);
+  const timeout = AbortSignal.timeout(45_000);
+  const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
   const response = await fetch(path, {
     ...init,
-    headers: {
-      "content-type": "application/json",
-      "x-request-id": requestId,
-      ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
-      ...(init.headers ?? {}),
-    },
+    signal,
+    headers,
   });
-  const body = await response.json().catch(() => ({}));
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    if (signal.aborted) throw signal.reason;
+    if (!response.ok || response.status === 204 || response.status === 205) body = {};
+    else throw new Error(`API returned invalid JSON [request ${headers.get("x-request-id") ?? requestId}]`);
+  }
   if (!response.ok) {
-    const errorBody = body && typeof body === "object" && "error" in body
+    const errorBody = body && typeof body === "object" && !Array.isArray(body) && "error" in body
       ? (body as { error?: { message?: string; requestId?: string } }).error
       : undefined;
-    const message = errorBody?.message ?? `HTTP ${response.status}`;
-    const correlation = errorBody?.requestId ?? response.headers.get("x-request-id") ?? requestId;
+    const message = typeof errorBody?.message === "string" ? errorBody.message : `HTTP ${response.status}`;
+    const correlation = typeof errorBody?.requestId === "string"
+      ? errorBody.requestId : response.headers.get("x-request-id") ?? headers.get("x-request-id") ?? requestId;
     throw new Error(`${message} [request ${correlation}]`);
   }
   return body as T;

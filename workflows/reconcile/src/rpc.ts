@@ -135,10 +135,15 @@ export function isBlockedRpcIp(ip: string): boolean {
     ].some(([base, prefix]) => inV4Range(ip, String(base), Number(prefix)));
   }
   if (family === 6) {
-    const value = ip.toLowerCase();
-    const mappedDotted = value.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1];
-    if (mappedDotted && isIP(mappedDotted) === 4) return isBlockedRpcIp(mappedDotted);
-    const mappedHex = value.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    // WHATWG URL canonicalizes expanded IPv6 literals and embedded IPv4 addresses.
+    // Without normalization 0:0:0:0:0:ffff:7f00:1 can evade the mapped-v4 check.
+    let value: string;
+    try {
+      value = new URL(`http://[${ip}]/`).hostname.slice(1, -1).toLowerCase();
+    } catch {
+      return true;
+    }
+    const mappedHex = value.match(/^::(?:(?:ffff:|ffff:0:))?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
     if (mappedHex?.[1] && mappedHex[2]) {
       const high = Number.parseInt(mappedHex[1], 16);
       const low = Number.parseInt(mappedHex[2], 16);
@@ -147,7 +152,9 @@ export function isBlockedRpcIp(ip: string): boolean {
     return (
       value === "::" || value === "::1" || value.startsWith("fc") || value.startsWith("fd") ||
       /^fe[89ab]/.test(value) || value.startsWith("ff") || value.startsWith("2001:db8") ||
-      value.startsWith("2002:") || value.startsWith("2001:0000:") || value.startsWith("64:ff9b::")
+      value.startsWith("2002:") || value.startsWith("2001::") || value.startsWith("2001:0:") ||
+      value.startsWith("2001:10:") || value.startsWith("2001:20:") ||
+      value.startsWith("64:ff9b::") || value.startsWith("64:ff9b:1:") || value.startsWith("3fff:")
     );
   }
   return true;
@@ -161,7 +168,7 @@ interface ResolvedRpcDestination {
 
 function allowLocalRpc(url: URL): boolean {
   const explicit = process.env.CKB_ALLOW_INSECURE_RPC === "true";
-  const localHost = ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
+  const localHost = ["localhost", "127.0.0.1", "::1"].includes(url.hostname.replace(/^\[|\]$/g, ""));
   return localHost && (explicit || process.env.NODE_ENV !== "production");
 }
 
@@ -179,9 +186,16 @@ export async function resolveRpcDestination(rawUrl: string): Promise<ResolvedRpc
   if (url.protocol !== "https:" && !(localAllowed && url.protocol === "http:")) {
     throw new CellFlowError("RPC_UNAVAILABLE", "CKB RPC must use HTTPS outside explicit local development", 503);
   }
-  const records = await lookup(url.hostname, { all: true, verbatim: true });
+  const hostname = url.hostname.replace(/^\[|\]$/g, "");
+  const records = await lookup(hostname, { all: true, verbatim: true });
   if (records.length === 0) {
     throw new CellFlowError("RPC_UNAVAILABLE", "CKB RPC hostname did not resolve", 503);
+  }
+  if (localAllowed && records.some((record) => !(
+    record.address === "::1" ||
+    (record.family === 4 && record.address.startsWith("127."))
+  ))) {
+    throw new CellFlowError("RPC_UNAVAILABLE", "Local RPC hostname must resolve only to loopback", 503);
   }
   if (!localAllowed && records.some((record) => isBlockedRpcIp(record.address))) {
     throw new CellFlowError("RPC_UNAVAILABLE", "CKB RPC hostname resolves to a blocked address", 503);
