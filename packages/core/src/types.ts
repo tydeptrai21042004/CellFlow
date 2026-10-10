@@ -237,6 +237,8 @@ export interface EvidenceDocument {
   committedBlockHash: string | null;
   committedBlockNumber: string | null;
   assertionStatus: string | null;
+  settlementReady: boolean;
+  settlementReadyAt: string | null;
   submissionErrorCode: string | null;
   submissionErrorType: SubmissionErrorType | null;
   submissionErrorDetails: unknown;

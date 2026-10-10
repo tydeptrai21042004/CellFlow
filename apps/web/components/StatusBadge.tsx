@@ -4,10 +4,10 @@ interface StatusBadgeProps {
 }
 
 const attention = new Set(["REJECTED", "NODE_REJECTED", "CONFLICTED", "REORGED", "EXPIRED"]);
-const success = new Set(["CONFIRMED", "VERIFIED", "DELIVERED"]);
+const success = new Set(["CONFIRMED", "VERIFIED", "DELIVERED", "SETTLEMENT_READY"]);
 const progress = new Set([
   "PENDING", "PROPOSED", "COMMITTED", "RECONCILING", "WAITING_CONFIRMATIONS",
-  "BROADCASTING", "SUBMITTED", "SUBMITTING", "PREPARED", "SUBMISSION_UNKNOWN", "UNKNOWN", "UNOBSERVED",
+  "BROADCASTING", "SUBMITTED", "SUBMITTING", "PREPARED", "SUBMISSION_UNKNOWN", "UNKNOWN", "UNOBSERVED", "NOT_SETTLED",
 ]);
 
 export function statusTone(value: string | null | undefined): "success" | "danger" | "progress" | "neutral" {

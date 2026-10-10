@@ -78,6 +78,7 @@ export interface ExecutionRecord {
   conflictType: ConflictType | null;
   conflictDetails: unknown;
   assertionStatus: string | null;
+  settlementReadyAt: string | null;
   assertionResult: unknown;
   lastRawObservation: unknown;
   lastObservedAt: string | null;

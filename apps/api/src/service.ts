@@ -617,6 +617,8 @@ export class CellFlowService {
       network: aggregate.execution.network,
       snapshot: snapshotFromExecution(aggregate.execution),
       assertionStatus: aggregate.execution.assertionStatus,
+      requiredAssertionCount: aggregate.intent.expectedCells.length,
+      settlementReadyAt: aggregate.execution.settlementReadyAt,
       submissionErrorCode: aggregate.execution.submissionErrorCode,
       submissionErrorType: aggregate.execution.submissionErrorType,
       submissionErrorDetails: aggregate.execution.submissionErrorDetails,

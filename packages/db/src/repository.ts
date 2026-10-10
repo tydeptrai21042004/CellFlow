@@ -3,6 +3,7 @@ import type { Sql, TransactionSql } from "postgres";
 import {
   deriveOverallStatus,
   deriveRecommendedAction,
+  isSettlementReady,
   type AttemptDisposition,
   type AttemptKind,
   type ConflictType,
@@ -99,6 +100,7 @@ function mapExecution(row: Record<string, unknown>): ExecutionRecord {
     conflictType: row.conflict_type ? row.conflict_type as ConflictType : null,
     conflictDetails: row.conflict_details ?? null,
     assertionStatus: row.assertion_status ? String(row.assertion_status) : null,
+    settlementReadyAt: row.settlement_ready_at ? iso(row.settlement_ready_at as Date | string) : null,
     assertionResult: row.assertion_result ?? null,
     lastRawObservation: row.last_raw_observation ?? null,
     lastObservedAt: row.last_observed_at ? iso(row.last_observed_at as Date | string) : null,
@@ -165,6 +167,8 @@ function webhookEventType(kind: string, status: string): string {
   if (kind === "ASSERTION_VERIFIED") return "intent.assertion_verified";
   if (kind === "ASSERTION_FAILED") return "intent.assertion_failed";
   if (kind === "REORG_DETECTED") return "intent.reorged";
+  if (kind === "SETTLEMENT_READY") return "intent.settlement_ready";
+  if (kind === "SETTLEMENT_REVOKED") return "intent.settlement_revoked";
   if (kind === "CONFIRMED") return "intent.confirmed";
   if (kind === "OPERATOR_NOTE") return "intent.operator_note";
   return `intent.${status.toLowerCase()}`;
@@ -217,6 +221,8 @@ export class CellFlowRepository {
     occurredAt: Date;
     snapshot: ExecutionSnapshot;
     assertionStatus?: string | null;
+    requiredAssertionCount?: number;
+    conflictType?: ConflictType | null;
   }): Promise<string> {
     const eventId = randomUUID();
     await tx`
@@ -244,6 +250,10 @@ export class CellFlowRepository {
         workflowStatus: input.snapshot.workflowStatus,
         confirmationCount: input.snapshot.confirmationCount,
         assertionStatus: input.assertionStatus ?? null,
+        settlementReady: isSettlementReady(
+          input.snapshot, input.assertionStatus ?? null,
+          input.requiredAssertionCount ?? 0, input.conflictType ?? null,
+        ),
       },
     };
     await tx`
@@ -485,6 +495,7 @@ export class CellFlowRepository {
         intentId: input.intentId,
         txHash: input.txHash ?? null,
         kind: "CREATED",
+        requiredAssertionCount: input.expectedCells.length,
         fromStatus: null,
         toStatus: deriveOverallStatus(snapshot),
         reason: "Intent accepted and persisted atomically with its audit event",
@@ -854,6 +865,7 @@ export class CellFlowRepository {
                 committed_block_hash = null, committed_block_number = null, rejection_reason = null,
                 submission_error_code = null, submission_error_type = null, submission_error_details = null,
                 conflict_type = null, conflict_details = null, assertion_status = null, assertion_result = null,
+                settlement_ready_at = null,
                 last_raw_observation = null, last_observed_at = null, reconcile_attempts = 0,
                 next_reconcile_at = ${input.nextReconcileAt ?? null}, version = version + 1, updated_at = now()
             where id = ${input.aggregate.execution.id}
@@ -912,6 +924,7 @@ export class CellFlowRepository {
         occurredAt: new Date(),
         snapshot,
         assertionStatus: creatingAttempt ? null : input.aggregate.execution.assertionStatus,
+        requiredAssertionCount: input.aggregate.intent.expectedCells.length,
       });
     });
     const result = await this.getIntent(input.aggregate.intent.projectId, input.aggregate.intent.intentId);
@@ -993,6 +1006,11 @@ export class CellFlowRepository {
     const fromStatus = deriveOverallStatus(before);
     const toStatus = deriveOverallStatus(input.snapshot);
     const disposition = dispositionForSnapshot(input.snapshot);
+    const oldSettlementReady = input.aggregate.execution.settlementReadyAt !== null &&
+      isSettlementReady(before, input.aggregate.execution.assertionStatus,
+        input.aggregate.intent.expectedCells.length, input.aggregate.execution.conflictType);
+    const promotedSettlementReady = isSettlementReady(input.snapshot, null,
+      input.aggregate.intent.expectedCells.length, attempt.conflictType);
 
     await this.sql.begin(async (tx) => {
       const updated = await tx`
@@ -1013,6 +1031,7 @@ export class CellFlowRepository {
           conflict_type = ${attempt.conflictType},
           conflict_details = ${attempt.conflictDetails === null ? null : tx.json(toJsonValue(attempt.conflictDetails))},
           assertion_status = null, assertion_result = null,
+          settlement_ready_at = ${promotedSettlementReady ? new Date(input.occurredAt) : null},
           last_raw_observation = ${input.rawObservation === undefined ? null : tx.json(toJsonValue(input.rawObservation))},
           last_observed_at = ${new Date(input.occurredAt)},
           next_reconcile_at = ${input.nextReconcileAt ?? new Date()},
@@ -1068,7 +1087,31 @@ export class CellFlowRepository {
         occurredAt: new Date(input.occurredAt),
         snapshot: input.snapshot,
         assertionStatus: null,
+        requiredAssertionCount: input.aggregate.intent.expectedCells.length,
       });
+      // A candidate can already satisfy the depth policy when promoted. Its
+      // initial settlement transition cannot be postponed to the next poll.
+      if (oldSettlementReady !== promotedSettlementReady) {
+        await this.insertEventAndOutbox(tx, {
+          projectId: input.aggregate.intent.projectId,
+          intentRowId: input.aggregate.intent.id,
+          executionId: input.aggregate.execution.id,
+          intentId: input.aggregate.intent.intentId,
+          txHash: attempt.txHash,
+          kind: promotedSettlementReady ? "SETTLEMENT_READY" : "SETTLEMENT_REVOKED",
+          fromStatus,
+          toStatus,
+          occurredAt: new Date(input.occurredAt),
+          snapshot: input.snapshot,
+          assertionStatus: null,
+          requiredAssertionCount: input.aggregate.intent.expectedCells.length,
+          conflictType: attempt.conflictType,
+          reason: promotedSettlementReady
+            ? "Promoted canonical competing transaction satisfied the confirmation policy with no required Cell assertions"
+            : "Competing transaction replaced the previous settlement projection; downstream applications must assess compensation",
+          rawObservation: input.rawObservation,
+        });
+      }
     });
 
     const result = await this.getIntent(input.aggregate.intent.projectId, input.aggregate.intent.intentId);
@@ -1154,6 +1197,7 @@ export class CellFlowRepository {
         occurredAt: new Date(),
         snapshot,
         assertionStatus: input.aggregate.execution.assertionStatus,
+        requiredAssertionCount: input.aggregate.intent.expectedCells.length,
       });
     });
     const result = await this.getIntent(input.aggregate.intent.projectId, input.aggregate.intent.intentId);
@@ -1179,9 +1223,21 @@ export class CellFlowRepository {
     conflictDetails?: unknown;
   }): Promise<string | null> {
     const prior = input.aggregate.execution;
-    const nextAssertionStatus = input.assertionStatus ?? prior.assertionStatus;
+    const nextAssertionStatus = input.assertionStatus === undefined
+      ? prior.assertionStatus : input.assertionStatus;
+    const requiredAssertionCount = input.aggregate.intent.expectedCells.length;
+    // A row that predates migration 009 has no durable settlement timestamp or
+    // dedicated settlement event. Treat its first recheck as the transition.
+    const priorReady = prior.settlementReadyAt !== null && isSettlementReady(
+      snapshotFromExecution(prior), prior.assertionStatus, requiredAssertionCount, prior.conflictType,
+    );
     const nextConflictType = input.conflictType === undefined ? prior.conflictType : input.conflictType;
     const nextConflictDetails = input.conflictDetails === undefined ? prior.conflictDetails : input.conflictDetails;
+    const nextReady = isSettlementReady(input.snapshot, nextAssertionStatus, requiredAssertionCount, nextConflictType);
+    const settlementChanged = priorReady !== nextReady;
+    const settlementReadyAt = nextReady
+      ? (priorReady && prior.settlementReadyAt ? new Date(prior.settlementReadyAt) : new Date(input.event.occurredAt))
+      : null;
     const meaningful =
       prior.submissionStatus !== input.snapshot.submissionStatus ||
       prior.chainStatus !== input.snapshot.chainStatus ||
@@ -1204,6 +1260,7 @@ export class CellFlowRepository {
           committed_block_number = ${input.snapshot.committedBlockNumber ?? null},
           rejection_reason = ${input.snapshot.rejectionReason ?? null},
           assertion_status = ${nextAssertionStatus},
+          settlement_ready_at = ${settlementReadyAt},
           conflict_type = ${nextConflictType},
           conflict_details = ${nextConflictDetails === null
             ? null
@@ -1255,8 +1312,8 @@ export class CellFlowRepository {
               : input.aggregate.intent.winningAttemptId}
         where id = ${input.aggregate.intent.id}
       `;
-      if (!meaningful) return null;
-      return this.insertEventAndOutbox(tx, {
+      if (!meaningful && !settlementChanged) return null;
+      const eventId = await this.insertEventAndOutbox(tx, {
         projectId: input.aggregate.intent.projectId,
         intentRowId: input.aggregate.intent.id,
         executionId: prior.id,
@@ -1270,7 +1327,31 @@ export class CellFlowRepository {
         occurredAt: new Date(input.event.occurredAt),
         snapshot: input.snapshot,
         assertionStatus: nextAssertionStatus,
+        requiredAssertionCount,
+        conflictType: nextConflictType,
       });
+      if (settlementChanged) {
+        await this.insertEventAndOutbox(tx, {
+          projectId: input.aggregate.intent.projectId,
+          intentRowId: input.aggregate.intent.id,
+          executionId: prior.id,
+          intentId: input.aggregate.intent.intentId,
+          txHash: prior.txHash,
+          kind: nextReady ? "SETTLEMENT_READY" : "SETTLEMENT_REVOKED",
+          fromStatus: input.event.fromStatus,
+          toStatus: input.event.toStatus,
+          reason: nextReady
+            ? "Canonical confirmation policy and all required expected-Cell assertions verified"
+            : "A previous settlement-ready observation is no longer valid; downstream applications must assess compensation",
+          rawObservation: input.event.rawObservation,
+          occurredAt: new Date(input.event.occurredAt),
+          snapshot: input.snapshot,
+          assertionStatus: nextAssertionStatus,
+          requiredAssertionCount,
+          conflictType: nextConflictType,
+        });
+      }
+      return eventId;
     });
   }
 
@@ -1294,6 +1375,7 @@ export class CellFlowRepository {
       ...(input.reason ? { reason: input.reason } : {}),
       ...(input.rawObservation === undefined ? {} : { rawObservation: input.rawObservation }),
       occurredAt: new Date(),
+      requiredAssertionCount: input.aggregate.intent.expectedCells.length,
       snapshot: {
         submissionStatus: input.aggregate.execution.submissionStatus,
         chainStatus: input.aggregate.execution.chainStatus,
@@ -1321,6 +1403,7 @@ export class CellFlowRepository {
         occurredAt: new Date(),
         snapshot,
         assertionStatus: input.aggregate.execution.assertionStatus,
+        requiredAssertionCount: input.aggregate.intent.expectedCells.length,
       });
       await tx`update intents set updated_at = now() where id = ${input.aggregate.intent.id}`;
       await tx`update executions set updated_at = now() where id = ${input.aggregate.execution.id}`;
@@ -1735,6 +1818,11 @@ export class CellFlowRepository {
       committedBlockHash: snapshot.committedBlockHash ?? null,
       committedBlockNumber: snapshot.committedBlockNumber ?? null,
       assertionStatus: aggregate.execution.assertionStatus,
+      settlementReady: isSettlementReady(
+        snapshot, aggregate.execution.assertionStatus,
+        aggregate.intent.expectedCells.length, aggregate.execution.conflictType,
+      ),
+      settlementReadyAt: aggregate.execution.settlementReadyAt,
       assertionResult: aggregate.execution.assertionResult,
       submissionErrorCode: aggregate.execution.submissionErrorCode,
       submissionErrorType: aggregate.execution.submissionErrorType,
@@ -1747,6 +1835,7 @@ export class CellFlowRepository {
         aggregate.execution.assertionStatus,
         aggregate.execution.conflictDetails,
         aggregate.execution.submissionErrorDetails,
+        aggregate.intent.expectedCells.length,
       ),
       workflowRunId: aggregate.execution.workflowRunId,
       createdAt: aggregate.intent.createdAt,

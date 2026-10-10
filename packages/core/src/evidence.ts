@@ -8,7 +8,7 @@ import type {
   OutPointRef,
   SubmissionErrorType,
 } from "./types.ts";
-import { deriveOverallStatus, deriveRecommendedAction } from "./state-machine.ts";
+import { deriveOverallStatus, deriveRecommendedAction, isSettlementReady } from "./state-machine.ts";
 
 export interface EvidenceInput {
   projectId: string;
@@ -22,6 +22,8 @@ export interface EvidenceInput {
   network: string;
   snapshot: ExecutionSnapshot;
   assertionStatus: string | null;
+  requiredAssertionCount?: number;
+  settlementReadyAt?: string | null;
   submissionErrorCode: string | null;
   submissionErrorType: SubmissionErrorType | null;
   submissionErrorDetails: unknown;
@@ -54,6 +56,8 @@ export function buildEvidence(input: EvidenceInput): EvidenceDocument {
     committedBlockHash: input.snapshot.committedBlockHash ?? null,
     committedBlockNumber: input.snapshot.committedBlockNumber ?? null,
     assertionStatus: input.assertionStatus,
+    settlementReady: isSettlementReady(input.snapshot, input.assertionStatus, input.requiredAssertionCount ?? 0, input.conflictType),
+    settlementReadyAt: input.settlementReadyAt ?? null,
     submissionErrorCode: input.submissionErrorCode,
     submissionErrorType: input.submissionErrorType,
     submissionErrorDetails: input.submissionErrorDetails,
@@ -65,6 +69,7 @@ export function buildEvidence(input: EvidenceInput): EvidenceDocument {
       input.assertionStatus,
       input.conflictDetails,
       input.submissionErrorDetails,
+      input.requiredAssertionCount ?? 0,
     ),
     createdAt: input.createdAt,
     updatedAt: input.updatedAt,

@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { postSettlementMonitorMs, shouldContinueSettlementMonitoring, shouldReverifyExpectedCells } from "./monitoring.ts";
 import {
   applyChainObservation,
   deriveOverallStatus,
   initialSnapshot,
   setWorkflowStatus,
   supersedeNodeRejectionFromChainEvidence,
+  isSettlementReady,
   breakSpendObservationContinuity,
   conflictObservationMatured,
   nextSpentObservationDetails,
@@ -104,6 +106,7 @@ export interface ReconcileResult {
   changed: boolean;
   status: string;
   assertionStatus: string | null;
+  settlementReady: boolean;
   terminal: boolean;
   nextDelayMs: number | null;
   error?: string;
@@ -313,7 +316,7 @@ async function promoteCommittedCompetingCandidate(
         reason: "A previously unresolved transaction candidate committed on the canonical chain and now drives the intent projection",
         rawObservation: observed.observation.raw,
         occurredAt: observed.observation.observedAt,
-        nextReconcileAt: applied.snapshot.workflowStatus === "CONFIRMED" ? null : new Date(Date.now() + 12_000),
+        nextReconcileAt: new Date(Date.now() + 12_000),
       });
     } catch (error) {
       const observedAt = new Date().toISOString();
@@ -349,6 +352,7 @@ async function reconcileIntentOnce(
       changed: false,
       status: deriveOverallStatus(snapshotFromExecution(aggregate.execution)),
       assertionStatus: aggregate.execution.assertionStatus,
+      settlementReady: false,
       terminal: false,
       nextDelayMs: null,
     };
@@ -440,6 +444,7 @@ async function reconcileIntentOnce(
       changed: Boolean(eventId),
       status: deriveOverallStatus(applied.snapshot),
       assertionStatus: aggregate.execution.assertionStatus,
+      settlementReady: false,
       terminal: false,
       nextDelayMs,
     };
@@ -600,7 +605,23 @@ async function reconcileIntentOnce(
   }
 
   const assertions = aggregate.intent.expectedCells as ExpectedCellAssertion[];
-  if (nextSnapshot.workflowStatus === "CONFIRMED" && assertions.length > 0) {
+  // Never re-use assertions from an earlier committed block after a reorg.
+  if (applied.reorgDetected || nextSnapshot.workflowStatus === "REORGED") {
+    assertionStatus = null;
+    assertionResult = null;
+  }
+  // Current live-Cell state is a point-in-time assertion. Once verified,
+  // authorized later spending does not undo that historical settlement. During
+  // the finite monitoring horizon, observe the committed block/canonicality;
+  // only recheck Cell assertions if the canonical block changed.
+  const reverifyAssertions = shouldReverifyExpectedCells({
+    previouslySettled: aggregate.execution.settlementReadyAt !== null,
+    previouslyVerified: aggregate.execution.assertionStatus === "VERIFIED",
+    priorCommittedBlockHash: aggregate.execution.committedBlockHash,
+    currentCommittedBlockHash: nextSnapshot.committedBlockHash ?? null,
+    reorgDetected: applied.reorgDetected,
+  });
+  if (nextSnapshot.workflowStatus === "CONFIRMED" && assertions.length > 0 && reverifyAssertions) {
     const evaluated = await evaluateAssertions({
       client,
       endpoint,
@@ -631,9 +652,18 @@ async function reconcileIntentOnce(
     aggregate.attempts.some((attempt) =>
       attempt.disposition === "ACTIVE" && attempt.id !== aggregate.intent.activeAttemptId
     );
+  const settlementReady = isSettlementReady(
+    nextSnapshot, assertionStatus ?? null, assertions.length, conflictType,
+  );
+  const firstReadyAt = settlementReady
+    ? (aggregate.execution.settlementReadyAt ?? observation.observedAt)
+    : null;
+  const monitoring = shouldContinueSettlementMonitoring(
+    settlementReady, firstReadyAt, Date.now(),
+  );
   const terminal =
     isTerminal(nextSnapshot, assertionStatus ?? null, assertions.length) &&
-    !unresolvedCompetingCandidate;
+    !unresolvedCompetingCandidate && !monitoring;
   const nodeRejectionConflictResolved =
     !unresolvedCompetingCandidate &&
     observation.status === "UNKNOWN" &&
@@ -641,7 +671,9 @@ async function reconcileIntentOnce(
     conflictType === null;
   const nextDelayMs = terminal || nodeRejectionConflictResolved
     ? null
-    : nextReconcileDelayMs(aggregate.execution.reconcileAttempts, nextSnapshot.chainStatus);
+    : monitoring
+      ? Math.min(60_000, Math.max(12_000, postSettlementMonitorMs() / 20))
+      : nextReconcileDelayMs(aggregate.execution.reconcileAttempts, nextSnapshot.chainStatus);
   const nextReconcileAt = nextDelayMs === null ? null : new Date(Date.now() + nextDelayMs);
 
   const eventId = await repository.applySnapshot({
@@ -668,6 +700,7 @@ async function reconcileIntentOnce(
     changed: Boolean(eventId),
     status: deriveOverallStatus(nextSnapshot),
     assertionStatus: assertionStatus ?? null,
+    settlementReady,
     terminal,
     nextDelayMs,
   };
@@ -749,6 +782,7 @@ export async function reconcileDue(limit = 25): Promise<ReconcileResult[]> {
           changed: false,
           status: "LEASE_LOST",
           assertionStatus: aggregate.execution.assertionStatus,
+          settlementReady: false,
           terminal: false,
           nextDelayMs: null,
           error: "Reconciliation lease was lost before work started",
@@ -763,6 +797,7 @@ export async function reconcileDue(limit = 25): Promise<ReconcileResult[]> {
         changed: false,
         status: "ERROR",
         assertionStatus: aggregate.execution.assertionStatus,
+        settlementReady: false,
         terminal: false,
         nextDelayMs: null,
         error: error instanceof Error ? error.message : "Reconciliation worker failed",

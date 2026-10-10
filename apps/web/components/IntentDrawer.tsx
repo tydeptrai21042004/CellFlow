@@ -42,6 +42,8 @@ export interface IntentDetail {
   committedBlockHash?: string | null;
   committedBlockNumber?: string | null;
   assertionStatus: string | null;
+  settlementReady?: boolean;
+  settlementReadyAt?: string | null;
   assertionResult?: unknown;
   metadata?: Record<string, unknown>;
   expectedCells?: unknown[];
@@ -106,8 +108,13 @@ export default function IntentDrawer({ detail, busy, onClose, onReconcile, onEvi
             <span>{detail.confirmationPolicy?.mode === "depth" ? `Target ${required}` : "Commit policy"}</span>
           </div>
           <div className="progress-track"><span style={{ width: `${percent}%` }} /></div>
+          {detail.workflowStatus === "CONFIRMED" && detail.settlementReady !== true && (
+            <p role="status">Chain confirmation is not business settlement. Required Cell assertions must pass before finalization.</p>
+          )}
           <dl className="detail-list">
             <div><dt>Assertion</dt><dd><StatusBadge value={detail.assertionStatus ?? "NOT_CONFIGURED"} compact /></dd></div>
+            <div><dt>Business settlement</dt><dd><StatusBadge value={detail.settlementReady === true ? "SETTLEMENT_READY" : "NOT_SETTLED"} compact /></dd></div>
+            <div><dt>Settlement first observed</dt><dd>{detail.settlementReadyAt ?? "—"}</dd></div>
             <div><dt>Recommended action</dt><dd>{detail.recommendedAction?.replaceAll("_", " ") ?? "NONE"}</dd></div>
             <div><dt>Committed block</dt><dd className="mono-line">{shortHash(detail.committedBlockHash)}</dd></div>
             <div><dt>Block number</dt><dd>{detail.committedBlockNumber ?? "—"}</dd></div>

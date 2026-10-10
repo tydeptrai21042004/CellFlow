@@ -41,6 +41,26 @@ export function isConfirmationSatisfied(
   return confirmationCount >= policy.blocks;
 }
 
+/**
+ * Business settlement is a separate, deliberately stricter boundary than chain
+ * confirmation. An absent required assertion is NOT a successful assertion.
+ * Canonical commit evidence is retained with the execution snapshot.
+ */
+export function isSettlementReady(
+  snapshot: ExecutionSnapshot,
+  assertionStatus: string | null,
+  requiredAssertionCount: number,
+  conflictType: ConflictType | null = null,
+): boolean {
+  return snapshot.workflowStatus === "CONFIRMED" &&
+    snapshot.chainStatus === "COMMITTED" &&
+    Boolean(snapshot.committedBlockHash && snapshot.committedBlockNumber) &&
+    isConfirmationSatisfied(snapshot.confirmationPolicy, snapshot.chainStatus, snapshot.confirmationCount) &&
+    conflictType === null &&
+    Number.isSafeInteger(requiredAssertionCount) && requiredAssertionCount >= 0 &&
+    (requiredAssertionCount === 0 || assertionStatus === "VERIFIED");
+}
+
 export function deriveOverallStatus(snapshot: ExecutionSnapshot): OverallStatus {
   if (snapshot.workflowStatus === "CONFLICTED") return "CONFLICTED";
   if (snapshot.workflowStatus === "EXPIRED") return "EXPIRED";
@@ -72,8 +92,17 @@ export function deriveRecommendedAction(
   assertionStatus: string | null = null,
   conflictDetails: unknown = null,
   submissionErrorDetails: unknown = null,
+  requiredAssertionCount = 0,
 ): RecommendedAction {
-  if (snapshot.workflowStatus === "CONFIRMED") return "NONE";
+  // A chain-confirmed operation can still be blocked by an assertion or
+  // conflict. In particular, a temporarily unavailable assertion RPC must
+  // never yield a no-action/settled projection.
+  if (assertionStatus === "FAILED" || conflictType === "EXPECTED_CELL_ASSERTION_FAILED" ||
+      conflictType === "SIGNED_PAYLOAD_MISMATCH") return "MANUAL_REVIEW";
+  if (snapshot.workflowStatus === "CONFIRMED") {
+    return isSettlementReady(snapshot, assertionStatus, requiredAssertionCount, conflictType)
+      ? "NONE" : "WAIT_FOR_RECONCILIATION";
+  }
   if (conflictType === "INPUT_SPENT") {
     const domain = conflictDomainFromDetails(conflictDetails);
     if (domain === "WALLET") return "RECOLLECT_WALLET_INPUTS";
@@ -96,10 +125,6 @@ export function deriveRecommendedAction(
       return "MANUAL_REVIEW";
     }
     return "WAIT_AND_RECONCILE";
-  }
-  if (assertionStatus === "FAILED" || conflictType === "EXPECTED_CELL_ASSERTION_FAILED" ||
-      conflictType === "SIGNED_PAYLOAD_MISMATCH") {
-    return "MANUAL_REVIEW";
   }
   if (snapshot.submissionStatus === "NODE_REJECTED") {
     const submissionDetails = submissionErrorDetails && typeof submissionErrorDetails === "object" && !Array.isArray(submissionErrorDetails)

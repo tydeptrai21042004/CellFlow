@@ -17,6 +17,7 @@ type Intent = {
   confirmationPolicy?: { mode: string; blocks?: number };
   confirmationCount: number;
   assertionStatus: string | null;
+  settlementReady?: boolean;
   updatedAt: string;
   createdAt: string;
 };
@@ -268,7 +269,7 @@ export default function Dashboard() {
         <div className="notice" role="status" aria-live="polite">{message}</div>
         <div className="table-wrap">
           <table>
-            <thead><tr><th>Intent</th><th>Overall</th><th>Lifecycle</th><th>Confirmations</th><th>Assertion</th><th>Updated</th><th><span className="sr-only">Actions</span></th></tr></thead>
+            <thead><tr><th>Intent</th><th>Overall</th><th>Lifecycle</th><th>Confirmations</th><th>Assertion</th><th>Settlement</th><th>Updated</th><th><span className="sr-only">Actions</span></th></tr></thead>
             <tbody>
               {filtered.map((item) => {
                 const target = item.confirmationPolicy?.mode === "depth" ? item.confirmationPolicy.blocks ?? 0 : 1;
@@ -278,11 +279,12 @@ export default function Dashboard() {
                   <td><div className="lifecycle-cells"><span title="Submission">{humanStatus(item.submissionStatus)}</span><span aria-hidden="true">→</span><span title="CKB">{humanStatus(item.chainStatus)}</span><span aria-hidden="true">→</span><span title="Workflow">{humanStatus(item.workflowStatus)}</span></div></td>
                   <td><div className="confirmation-cell"><strong>{item.confirmationCount}</strong><span>{target ? `/ ${target}` : ""}</span></div></td>
                   <td><StatusBadge value={item.assertionStatus ?? "NOT_CONFIGURED"} compact /></td>
+                  <td><StatusBadge value={item.settlementReady === true ? "SETTLEMENT_READY" : "NOT_SETTLED"} compact /></td>
                   <td><span title={item.updatedAt}>{formatRelativeTime(item.updatedAt)}</span></td>
                   <td><button className="row-menu" type="button" onClick={() => openDetail(item.intentId)} aria-label={`Open ${item.intentId}`}>View →</button></td>
                 </tr>;
               })}
-              {filtered.length === 0 && <tr><td colSpan={7} className="empty"><strong>No matching intents</strong><span>{canLoad ? "Try another filter or track a transaction." : "Connect an API key to load project activity."}</span></td></tr>}
+              {filtered.length === 0 && <tr><td colSpan={8} className="empty"><strong>No matching intents</strong><span>{canLoad ? "Try another filter or track a transaction." : "Connect an API key to load project activity."}</span></td></tr>}
             </tbody>
           </table>
         </div>

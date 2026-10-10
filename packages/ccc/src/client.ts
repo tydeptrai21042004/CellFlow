@@ -47,6 +47,7 @@ export interface IntentView {
   workflowStatus: string;
   confirmationCount: number;
   assertionStatus: string | null;
+  settlementReady: boolean;
   submissionErrorCode: string | null;
   submissionErrorType: SubmissionErrorType | null;
   submissionErrorDetails: unknown;
@@ -294,7 +295,7 @@ export class CellFlowClient {
       }
       if (until === "committed" && ["COMMITTED", "CONFIRMED"].includes(current.status)) return current;
       if (until === "confirmed" && current.status === "CONFIRMED") return current;
-      if (until === "verified" && current.status === "CONFIRMED" && current.assertionStatus === "VERIFIED") return current;
+      if (until === "verified" && current.settlementReady === true) return current;
       await delayUnlessAborted(Math.min(intervalMs, Math.max(0, deadline - Date.now())), options.signal);
     }
     if (options.signal?.aborted) throw abortReason(options.signal);
