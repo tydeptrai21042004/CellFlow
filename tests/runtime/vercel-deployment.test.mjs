@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, cp, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { selectInstall } from "../../scripts/vercel-install.mjs";
 import { assertDeployedReadiness, verifyLive } from "../../scripts/verify-deployment.mjs";
@@ -41,4 +42,43 @@ test("deployment verifier checks HTTPS origin and JSON without needing external 
   await assert.rejects(() => verifyLive({ origin: "https://api-key@cellflow.example", expectedSha: sha, fetchImpl }), /clean deployment origin/);
   await assert.rejects(() => verifyLive({ origin: "http://cellflow.example", expectedSha: sha, fetchImpl }), /HTTPS/);
   await assert.rejects(() => verifyLive({ origin: "https://cellflow.example/console", expectedSha: sha, fetchImpl }), /clean deployment origin/);
+});
+
+
+test("Vercel preflight permits GitHub web-upload checkout without dotfiles, strict release does not", async () => {
+  const root = fileURLToPath(new URL("../..", import.meta.url));
+  const sandbox = await mkdtemp(join(tmpdir(), "cellflow-vercel-preflight-"));
+  const checkout = join(sandbox, "checkout");
+  const omit = new Set([
+    ".nvmrc", ".gitignore", ".env.example", ".env.testnet.example",
+    "node_modules", ".git", ".next", ".vercel", ".tmp", "dist", "coverage",
+  ]);
+  try {
+    await cp(root, checkout, {
+      recursive: true,
+      filter: (src) => {
+        const parts = relative(root, src).split(sep);
+        return !parts.some((part) => omit.has(part));
+      },
+    });
+    const run = (...args) => spawnSync(process.execPath,
+      ["scripts/release-preflight.mjs", ...args], { cwd: checkout, encoding: "utf8" });
+    const deploy = run("--vercel");
+    assert.equal(deploy.status, 0, deploy.stderr || deploy.stdout);
+    const report = JSON.parse(deploy.stdout);
+    assert.equal(report.readyForVercelDeployment, true);
+    assert.equal(report.readyForCleanReleasePipeline, false);
+    assert.deepEqual(report.blockers, []);
+    for (const path of [".nvmrc", ".gitignore", ".env.example", ".env.testnet.example"]) {
+      assert.ok(report.warnings.some((x) => x.name === `file:${path}`), `${path} should be warned about`);
+    }
+    const strict = run("--strict");
+    assert.equal(strict.status, 1, "Strict source-release mode must require missing support files");
+    await unlink(join(checkout, "packages/db/migrations/003_production_readiness.sql"));
+    const unsafe = run("--vercel");
+    assert.equal(unsafe.status, 1, "Required production migration must block deployment");
+    assert.ok(JSON.parse(unsafe.stdout).blockers.some((x) => x.name === "file:packages/db/migrations/003_production_readiness.sql"));
+  } finally {
+    await rm(sandbox, { recursive: true, force: true });
+  }
 });

@@ -8,6 +8,14 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const vercel = process.argv.includes("--vercel");
 const strict = process.argv.includes("--strict") || vercel;
 const checks = [];
+// GitHub web uploads and some ZIP tools omit dotfiles. Those files are useful
+// for developers and strict source releases, but none is read by Vercel at
+// runtime. Do not block a production build for their absence; keep the missing
+// artifacts visible as warnings and require them in `release:check`.
+const sourceSupportFiles = new Set([
+  ".nvmrc", ".gitignore", ".env.example", ".env.testnet.example",
+]);
+const sourceSupportSeverity = vercel ? "warning" : "blocker";
 
 async function exists(path) {
   try { await access(join(root, path), constants.F_OK); return true; } catch { return false; }
@@ -50,7 +58,8 @@ for (const path of [
   ".nvmrc",
   ".gitignore",
   ".env.testnet.example",
-]) add(`file:${path}`, await exists(path), "blocker", path);
+]) add(`file:${path}`, await exists(path),
+  sourceSupportFiles.has(path) ? sourceSupportSeverity : "blocker", path);
 
 const manifests = ["package.json"];
 for (const dir of ["apps/api", "apps/web", "packages/assertions", "packages/ccc", "packages/cli", "packages/core", "packages/db", "packages/webhooks", "workflows/reconcile"]) {
@@ -85,7 +94,7 @@ if (vercelConfigExists) {
 add("file:scripts/vercel-install.mjs", await exists("scripts/vercel-install.mjs"), "blocker", "lock-aware Vercel installer");
 
 const envExampleExists = await exists(".env.example");
-add("file:.env.example", envExampleExists, "blocker", envExampleExists ? ".env.example present" : ".env.example missing");
+add("file:.env.example", envExampleExists, sourceSupportSeverity, envExampleExists ? ".env.example present" : ".env.example missing");
 if (envExampleExists) {
   const envExample = await readFile(join(root, ".env.example"), "utf8");
   for (const key of [
@@ -93,7 +102,7 @@ if (envExampleExists) {
     "CELLFLOW_ENCRYPTION_KEY", "CELLFLOW_BOOTSTRAP_TOKEN", "CELLFLOW_SETUP_ENABLED", "CRON_SECRET",
     "CELLFLOW_RECONCILE_CONCURRENCY", "CELLFLOW_WEBHOOK_CONCURRENCY", "CELLFLOW_WEBHOOK_MAX_ATTEMPTS",
     "CKB_RPC_CIRCUIT_FAILURES", "CKB_RPC_CIRCUIT_COOLDOWN_MS", "CKB_ALLOW_INSECURE_RPC",
-  ]) add(`env-template:${key}`, envExample.includes(`${key}=`), "blocker", `${key} documented`);
+  ]) add(`env-template:${key}`, envExample.includes(`${key}=`), sourceSupportSeverity, `${key} documented`);
 }
 
 const blockers = checks.filter((item) => item.severity === "blocker" && !item.ok);
@@ -102,7 +111,11 @@ const report = {
   schemaVersion: "cellflow-release-preflight-v1",
   version: "0.3.0",
   generatedAt: new Date().toISOString(),
-  readyForCleanReleasePipeline: blockers.length === 0 && lockfile,
+  // Reproducible source-release readiness is stricter than deploy readiness.
+  // This is intentionally false when any source-only support file is missing.
+  readyForCleanReleasePipeline: blockers.length === 0 && lockfile &&
+    !warnings.some((item) => item.name.startsWith("env-template:") ||
+      [...sourceSupportFiles].some((path) => item.name === `file:${path}`)),
   readyForVercelDeployment: blockers.length === 0,
   reproducibleDependencies: lockfile,
   blockers: blockers.map(({ name, detail }) => ({ name, detail })),
