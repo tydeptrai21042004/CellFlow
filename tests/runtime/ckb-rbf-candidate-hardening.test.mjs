@@ -51,7 +51,7 @@ test("release preflight owns release-artifact support-file validation", () => {
   // Vercel runtime CI must validate executable behavior, not fail because an
   // optional dotfile was omitted while copying a patch. Strict release
   // packaging is still enforced by `npm run release:check`.
-  for (const file of [".env.example", ".gitignore", ".nvmrc", ".github/workflows/ci.yml"]) {
+  for (const file of [".env.example", ".gitignore", ".nvmrc", "vercel.json"]) {
     assert.match(releasePreflight, new RegExp(file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
 });

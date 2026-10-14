@@ -45,11 +45,12 @@ test("readiness probes every configured RPC instead of mixing failover sessions"
   assert.match(source, /endpointResults\.every/);
 });
 
-test("release artifacts include environment template and CI workflow", async () => {
+test("release artifacts include environment template and Vercel-only build gate", async () => {
   const env = await read(".env.example");
-  const ci = await read(".github/workflows/ci.yml");
+  const config = JSON.parse(await read("vercel.json"));
+  const installer = await read("scripts/vercel-install.mjs");
   assert.match(env, /CKB_EXPECTED_GENESIS_HASH=/);
   assert.match(env, /CELLFLOW_BOOTSTRAP_TOKEN=/);
-  assert.match(ci, /npm ci/);
-  assert.match(ci, /npm run release:check/);
+  assert.match(installer, /"ci"/);
+  assert.equal(config.buildCommand, "npm run ci:vercel");
 });

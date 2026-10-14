@@ -1,0 +1,119 @@
+{
+  "based_on": "CellFlow-main(9).zip",
+  "date": "2026-10-14",
+  "goal": "Vercel-only deployment, no GitHub Actions",
+  "changed_file_count": 17,
+  "changes": [
+    {
+      "path": ".env.example",
+      "sha256": "b817b8b2fc912e4c1f2a87b1ac8b311582fa0fc0c62402360938a59007a3b9f5",
+      "bytes": 886,
+      "action": "add"
+    },
+    {
+      "path": ".env.testnet.example",
+      "sha256": "d89ac2e21454d8868aca8c38dd86663d011651e040dd5c4577cfa96d8c9d37da",
+      "bytes": 708,
+      "action": "add"
+    },
+    {
+      "path": ".gitignore",
+      "sha256": "da7889d5c61c697fdea14edd724511d83314e71f1c0d054fbe2295b29bec3acd",
+      "bytes": 405,
+      "action": "add"
+    },
+    {
+      "path": ".nvmrc",
+      "sha256": "f14b4987904bcb5814e4459a057ed4d20f58a633152288a761214dcd28780b56",
+      "bytes": 3,
+      "action": "add"
+    },
+    {
+      "path": "VERCEL_ONLY_SETUP.md",
+      "sha256": "50221a68bc41069c94c538b992246c5cd23ff58af9774efa3a5a6ae7a1afa258",
+      "bytes": 6979,
+      "action": "add"
+    },
+    {
+      "path": "docs/VERCEL_REVIEW_AUTOMATION.md",
+      "sha256": "4110763887478e83109ff366b26fe5f3556a9f1286a2ab14f1f5d19bbdc03a21",
+      "bytes": 1207,
+      "action": "modify"
+    },
+    {
+      "path": "package.json",
+      "sha256": "4d7027561b37785f93ebd0e7457de378760fc85879bee3dac8320362d869d3ab",
+      "bytes": 5129,
+      "action": "modify"
+    },
+    {
+      "path": "scripts/cellflow-testnet-setup.sh",
+      "sha256": "c74da49a4aeb39ae84b425af3f55beff018e5365a717bd1dc38a37d66a036b2c",
+      "bytes": 7712,
+      "action": "modify"
+    },
+    {
+      "path": "scripts/release-preflight.mjs",
+      "sha256": "58c55f576638192d1fff98a554d68fa5fb055fc0ccd26c23b404d9dc4157cf8d",
+      "bytes": 5843,
+      "action": "modify"
+    },
+    {
+      "path": "scripts/vercel-install.mjs",
+      "sha256": "e46cfe54e007450e36c9b9dac95d1acb7651cc23755cc072c483ef14930fa46c",
+      "bytes": 2855,
+      "action": "add"
+    },
+    {
+      "path": "scripts/verify-deployment.mjs",
+      "sha256": "4f9a99809e6d65ddd89beca75b919c5a878994073766385c75efd6d559eb07ee",
+      "bytes": 2980,
+      "action": "add"
+    },
+    {
+      "path": "tests/runtime/ckb-rbf-candidate-hardening.test.mjs",
+      "sha256": "617f6abfc9eb5aa7370f7825bdef0902fdab811bbfdffc2eac43969d6f863ed4",
+      "bytes": 2656,
+      "action": "modify"
+    },
+    {
+      "path": "tests/runtime/funding-automation.test.mjs",
+      "sha256": "f853d4bc7c5b89154b496d91f10c905ff6bdce9276c1c78d64ea54efff56ffd4",
+      "bytes": 2141,
+      "action": "modify"
+    },
+    {
+      "path": "tests/runtime/production-readiness.test.mjs",
+      "sha256": "c622e54250019e1953f3f79a8c6678f06be6044dfebb2df7108062b10589f342",
+      "bytes": 5276,
+      "action": "modify"
+    },
+    {
+      "path": "tests/runtime/security-hardening.test.mjs",
+      "sha256": "f2bcaedb500b4c0ccdcb754870b7a5237b44c58af98cd0290506bb2d9e0b1d5a",
+      "bytes": 2910,
+      "action": "modify"
+    },
+    {
+      "path": "tests/runtime/vercel-deployment.test.mjs",
+      "sha256": "5f32013b52cc8a5cdb4ab9c180ec267bbda6f9aa84a71204111bef64c8e4c4d5",
+      "bytes": 3358,
+      "action": "add"
+    },
+    {
+      "path": "vercel.json",
+      "sha256": "2826a0dae162283ee7471eb873c4aca76e459c8fa50841b71b661d5ff3aa8c59",
+      "bytes": 310,
+      "action": "modify"
+    }
+  ],
+  "validation": {
+    "local_offline_tests": "57 passed, 0 failed (selected suites)",
+    "vercel_preflight": "passed with missing lockfile warning",
+    "live_vercel": "not tested",
+    "npm_install_and_build": "not tested: npm registry EAI_AGAIN",
+    "testnet": "not tested",
+    "postgres": "not tested"
+  },
+  "note": "package-lock.json cannot be generated offline; Vercel bootstrap fallback uses npm install without lockfile; commit a genuine lockfile for reproducible builds."
+}

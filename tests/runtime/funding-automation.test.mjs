@@ -15,16 +15,19 @@ test("funding automation includes safe env generation without wallet secrets", a
   assert.match(generator, /chmod 600/);
 });
 
-test("CI makes lockfile, migrations, DB races, build and strict preflight public gates", async () => {
-  const ci = await read(".github/workflows/ci.yml");
-  for (const expected of [
-    "test -s package-lock.json",
-    "npm ci",
-    "npm run migrate",
-    "npm run test:db-integration",
-    "npm run build",
-    "npm run release:check",
-  ]) assert.match(ci, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+test("Vercel build enforces deterministic regressions while DB tests remain isolated", async () => {
+  const config = JSON.parse(await read("vercel.json"));
+  const root = JSON.parse(await read("package.json"));
+  const installer = await read("scripts/vercel-install.mjs");
+  assert.equal(config.installCommand, "node scripts/vercel-install.mjs");
+  assert.equal(config.buildCommand, "npm run ci:vercel");
+  assert.match(installer, /"ci"/);
+  assert.match(installer, /"install"/);
+  assert.match(root.scripts["ci:vercel"], /test:vercel-deployment/);
+  assert.match(root.scripts["ci:vercel"], /typecheck/);
+  assert.match(root.scripts["ci:vercel"], /npm run build/);
+  assert.match(root.scripts["test:db-integration"], /db-settlement/);
+  assert.match(root.scripts["release:check"], /--strict/);
 });
 
 test("evidence scripts label injected proofs and external limitations truthfully", async () => {

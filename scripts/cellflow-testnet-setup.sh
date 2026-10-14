@@ -44,8 +44,8 @@ say "Checking repository release prerequisites"
 if [[ ! -f .env.example ]]; then
   warn ".env.example is missing in this ZIP. Fix/restore it in the repository; current runtime tests expect it."
 fi
-if [[ ! -f .github/workflows/ci.yml ]]; then
-  warn ".github/workflows/ci.yml is missing in this ZIP. Fix/restore it before claiming a clean release."
+if [[ ! -f vercel.json || ! -f scripts/vercel-install.mjs ]]; then
+  warn "Vercel deployment config/installer is missing. Restore it before deploying."
 fi
 
 say "Preparing local PostgreSQL"

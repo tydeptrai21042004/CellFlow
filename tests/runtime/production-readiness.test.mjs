@@ -101,10 +101,11 @@ test("production readiness redacts details and validates network plus RPC transp
 
 test("release preflight makes dependency reproducibility an explicit release gate", async () => {
   const script = await read("scripts/release-preflight.mjs");
-  const ci = await read(".github/workflows/ci.yml");
+  const installer = await read("scripts/vercel-install.mjs");
   const root = JSON.parse(await read("package.json"));
   assert.match(script, /dependency-lockfile/);
   assert.match(script, /pinned-direct-dependencies/);
-  assert.match(ci, /npm run release:check/);
+  assert.match(installer, /npm ci|"ci"/);
+  assert.match(root.scripts["ci:vercel"], /release:vercel/);
   assert.equal(root.scripts["release:check"], "node scripts/release-preflight.mjs --strict");
 });

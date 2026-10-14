@@ -5,7 +5,8 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const strict = process.argv.includes("--strict");
+const vercel = process.argv.includes("--vercel");
+const strict = process.argv.includes("--strict") || vercel;
 const checks = [];
 
 async function exists(path) {
@@ -17,7 +18,9 @@ const nodeMajor = Number(process.versions.node.split(".")[0]);
 add("node-version", nodeMajor === 22, "blocker", `Node ${process.versions.node}; required >=22 <23 to match package.json engines`);
 
 const lockfile = await exists("package-lock.json");
-add("dependency-lockfile", lockfile, "blocker", lockfile ? "package-lock.json present" : "package-lock.json missing; generate and commit it before release");
+add("dependency-lockfile", lockfile, vercel ? "warning" : "blocker", lockfile
+  ? "package-lock.json present; npm ci reproducible"
+  : "package-lock.json missing: Vercel may bootstrap with npm install; generate and commit a genuine lockfile for reproducible releases");
 if (lockfile) {
   try {
     const parsed = JSON.parse(await readFile(join(root, "package-lock.json"), "utf8"));
@@ -65,9 +68,21 @@ for (const path of manifests) {
 }
 add("pinned-direct-dependencies", floating.length === 0, "blocker", floating.length ? floating.join(", ") : "direct third-party versions are pinned");
 
-for (const workflow of ["ci.yml", "maintenance.yml", "testnet-review.yml", "generate-lockfile.yml"]) {
-  add(`file:.github/workflows/${workflow}`, await exists(`.github/workflows/${workflow}`), "blocker", workflow);
+// Vercel-only deployment: GitHub Actions files are neither required nor checked.
+const vercelConfigExists = await exists("vercel.json");
+add("file:vercel.json", vercelConfigExists, "blocker", "Vercel deployment configuration");
+if (vercelConfigExists) {
+  try {
+    const deploy = JSON.parse(await readFile(join(root, "vercel.json"), "utf8"));
+    add("vercel-install", deploy.installCommand === "node scripts/vercel-install.mjs", "blocker",
+      "Vercel must use lock-aware installer (not unconditional npm ci)");
+    add("vercel-build", deploy.buildCommand === "npm run ci:vercel", "blocker",
+      "Vercel runs deployment preflight, regression checks and Next.js build");
+    add("vercel-maintenance", Array.isArray(deploy.crons) && deploy.crons.some(c => c.path === "/api/internal/maintenance"),
+      "blocker", "Vercel owns scheduled maintenance; GitHub Actions not required");
+  } catch { add("vercel-config-json", false, "blocker", "Invalid vercel.json"); }
 }
+add("file:scripts/vercel-install.mjs", await exists("scripts/vercel-install.mjs"), "blocker", "lock-aware Vercel installer");
 
 const envExampleExists = await exists(".env.example");
 add("file:.env.example", envExampleExists, "blocker", envExampleExists ? ".env.example present" : ".env.example missing");
@@ -82,12 +97,17 @@ if (envExampleExists) {
 }
 
 const blockers = checks.filter((item) => item.severity === "blocker" && !item.ok);
+const warnings = checks.filter((item) => item.severity === "warning" && !item.ok);
 const report = {
   schemaVersion: "cellflow-release-preflight-v1",
   version: "0.3.0",
   generatedAt: new Date().toISOString(),
-  readyForCleanReleasePipeline: blockers.length === 0,
+  readyForCleanReleasePipeline: blockers.length === 0 && lockfile,
+  readyForVercelDeployment: blockers.length === 0,
+  reproducibleDependencies: lockfile,
   blockers: blockers.map(({ name, detail }) => ({ name, detail })),
+  warnings: warnings.map(({ name, detail }) => ({ name, detail })),
+  deploymentMode: vercel ? "vercel" : "strict-release",
   checks,
 };
 console.log(JSON.stringify(report, null, 2));

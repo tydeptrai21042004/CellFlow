@@ -1,26 +1,12 @@
-# Vercel automation for the CrowdCell review
+# Vercel-only reviewer validation and automation
 
-## What runs on every Vercel deployment
+This project does not require GitHub Actions. See [`VERCEL_ONLY_SETUP.md`](../../VERCEL_ONLY_SETUP.md).
 
-`vercel.json` uses `npm run ci:vercel` as the build command. A deployment is rejected if any of these fail:
+- **Install:** `node scripts/vercel-install.mjs` uses `npm ci` with a valid lockfile and `npm install` when bootstrapping without one.
+- **Build:** `npm run ci:vercel` runs Vercel preflight, deterministic regressions, TypeScript and Next.js production build. No private Testnet wallet is needed.
+- **Maintenance:** `vercel.json` schedules `/api/internal/maintenance` daily on Hobby; Vercel Workflows handle normal reconciliation. Pro installations may use a five-minute repair sweep.
+- **Hosted release identity:** use `npm run verify:deployment -- https://cellflow-brown.vercel.app <40-character-sha>`.
+- **Real Testnet evidence:** run `npm run validate:testnet-live` explicitly outside the hosted service with dedicated funded Testnet-only wallets. Preserve the non-custodial boundary.
+- **PostgreSQL tests and migrations:** run against a separate test/staging DB, not unconditionally during a build.
 
-1. TypeScript typecheck.
-2. CrowdCell reviewer regressions.
-3. Core state-machine tests.
-4. Broadcast classifier tests.
-5. Deterministic RPC behavior tests.
-6. Next.js production build.
-
-This is intentionally deterministic and does **not** broadcast a real Testnet transaction during ordinary builds.
-
-## What should be run as a separate Testnet evidence job
-
-The reviewer also asked about real submit-time conflicts, higher-fee displacement, the ~30-second contention window, and wallet-vs-application input recovery. Those can be headless, but they should run as an explicit evidence workflow using disposable Testnet-only accounts rather than during every production deploy.
-
-Recommended boundary:
-
-- Build/deploy gate: deterministic tests only.
-- Vercel Workflow/admin-only trigger: real Testnet race and polling.
-- JoyID/passkey approval: manual only when demonstrating wallet UX; not required for the headless protocol proof.
-
-Do not put production/Mainnet keys in the evidence workflow. Use dedicated Testnet accounts with minimal funds and server-side encrypted environment variables.
+The bootstrap install fallback is temporary: generate and commit a genuine npm lockfile when a registry-connected development machine is available.
