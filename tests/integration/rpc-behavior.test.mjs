@@ -21,7 +21,7 @@ function reply(response, id, result) {
   response.end(JSON.stringify({ jsonrpc: "2.0", id, result }));
 }
 
-async function startRpcServer({ mode = "mempool", failAll = false } = {}) {
+async function startRpcServer({ mode = "mempool", failAll = false, txMode = "missing", canonicalMode = "valid" } = {}) {
   const server = http.createServer((request, response) => {
     let body = "";
     request.setEncoding("utf8");
@@ -39,17 +39,21 @@ async function startRpcServer({ mode = "mempool", failAll = false } = {}) {
           reply(response, rpc.id, { chain: "ckb_testnet", is_initial_block_download: false });
           break;
         case "get_block_hash":
-          reply(response, rpc.id, first === "0x0" ? GENESIS : first === "0x20" ? CREATOR_BLOCK : null);
+          reply(response, rpc.id, first === "0x0" ? GENESIS : first === "0x20"
+            ? (canonicalMode === "missing" ? null : canonicalMode === "mismatch" ? LIVE_BLOCK : CREATOR_BLOCK)
+            : null);
           break;
         case "get_tip_header":
-          reply(response, rpc.id, { number: "0x30" });
+          reply(response, rpc.id, { number: canonicalMode === "stale-tip" ? "0x1f" : "0x30" });
           break;
         case "get_header":
           reply(response, rpc.id, first === CREATOR_BLOCK ? { number: "0x20" } : null);
           break;
         case "get_transaction":
           if (first === TARGET) {
-            reply(response, rpc.id, null);
+            reply(response, rpc.id, txMode === "committed"
+              ? { transaction: { outputs: [], outputs_data: [] }, tx_status: { status: "committed", block_hash: CREATOR_BLOCK } }
+              : null);
           } else if (first === CREATOR) {
             reply(response, rpc.id, {
               transaction: {
@@ -144,4 +148,65 @@ test("RPC destination policy blocks metadata/private addresses and credential-be
   assert.equal(isBlockedRpcIp("10.1.2.3"), true);
   assert.equal(isBlockedRpcIp("8.8.8.8"), false);
   assert.deepEqual(parseRpcUrls("https://user:pass@example.com/rpc", "https://example.com/rpc"), ["https://example.com/rpc"]);
+});
+
+
+test("committed RPC response cannot settle when canonical-height RPC is unavailable", async () => {
+  const rpc = await startRpcServer({ txMode: "committed", canonicalMode: "missing" });
+  try {
+    const observed = await new CkbRpcClient([rpc.url]).observe(TARGET, undefined, { chain: "ckb_testnet", genesisHash: GENESIS });
+    assert.equal(observed.observation.status, "UNKNOWN");
+    assert.equal(observed.observation.raw.canonicalEvidence, "UNAVAILABLE");
+  } finally { await rpc.close(); }
+});
+
+test("non-canonical transaction block cannot be counted as confirmed", async () => {
+  const rpc = await startRpcServer({ txMode: "committed", canonicalMode: "mismatch" });
+  try {
+    const observed = await new CkbRpcClient([rpc.url]).observe(TARGET, undefined, { chain: "ckb_testnet", genesisHash: GENESIS });
+    assert.equal(observed.observation.status, "UNKNOWN");
+    assert.equal(observed.observation.raw.canonicalEvidence, "NON_CANONICAL");
+  } finally { await rpc.close(); }
+});
+
+test("canonical committed transaction with tip and verified block is eligible for confirmation", async () => {
+  const rpc = await startRpcServer({ txMode: "committed", canonicalMode: "valid" });
+  try {
+    const observed = await new CkbRpcClient([rpc.url]).observe(TARGET, undefined, { chain: "ckb_testnet", genesisHash: GENESIS });
+    assert.equal(observed.observation.status, "COMMITTED");
+    assert.equal(observed.observation.canonicalBlockHash, CREATOR_BLOCK);
+    assert.equal(observed.observation.blockNumber, "0x20");
+  } finally { await rpc.close(); }
+});
+
+test("unavailable prior block-hash query is uncertainty, not proof of a reorg", async () => {
+  const rpc = await startRpcServer({ canonicalMode: "missing" });
+  try {
+    const observed = await new CkbRpcClient([rpc.url]).observe(TARGET,
+      { blockHash: CREATOR_BLOCK, blockNumber: "0x20" },
+      { chain: "ckb_testnet", genesisHash: GENESIS });
+    assert.equal(observed.observation.status, "UNKNOWN");
+    assert.equal(observed.observation.priorCommitCanonical, undefined);
+    assert.equal(observed.observation.raw.priorCommitCanonical, undefined);
+  } finally { await rpc.close(); }
+});
+
+test("a different verifiable canonical block does prove the prior commit was reorged", async () => {
+  const rpc = await startRpcServer({ canonicalMode: "mismatch" });
+  try {
+    const observed = await new CkbRpcClient([rpc.url]).observe(TARGET,
+      { blockHash: CREATOR_BLOCK, blockNumber: "0x20" },
+      { chain: "ckb_testnet", genesisHash: GENESIS });
+    assert.equal(observed.observation.priorCommitCanonical, false);
+  } finally { await rpc.close(); }
+});
+
+
+test("a valid canonical hash with an RPC tip below the committed height remains undecided", async () => {
+  const rpc = await startRpcServer({ txMode: "committed", canonicalMode: "stale-tip" });
+  try {
+    const observed = await new CkbRpcClient([rpc.url]).observe(TARGET, undefined, { chain: "ckb_testnet", genesisHash: GENESIS });
+    assert.equal(observed.observation.status, "UNKNOWN");
+    assert.equal(observed.observation.raw.canonicalEvidence, "UNAVAILABLE");
+  } finally { await rpc.close(); }
 });

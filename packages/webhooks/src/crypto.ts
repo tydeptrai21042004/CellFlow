@@ -50,10 +50,15 @@ export function verifyWebhookSignature(input: {
 }): boolean {
   const now = input.now ?? Math.floor(Date.now() / 1000);
   const tolerance = input.toleranceSeconds ?? 300;
-  if (Math.abs(now - input.timestamp) > tolerance) return false;
+  if (!Number.isSafeInteger(now) || !Number.isSafeInteger(input.timestamp) ||
+      !Number.isSafeInteger(tolerance) || tolerance < 0 || tolerance > 3600 ||
+      Math.abs(now - input.timestamp) > tolerance) return false;
   const presented = input.signatureHeader.startsWith("v1=")
     ? input.signatureHeader.slice(3)
     : input.signatureHeader;
+  // Buffer.from(hex) silently ignores trailing non-hex text. Reject malformed
+  // signatures before constant-time comparison to avoid accepting such inputs.
+  if (!/^[0-9a-fA-F]{64}$/.test(presented)) return false;
   const expected = signWebhook(input.rawBody, input.timestamp, input.secret);
   const a = Buffer.from(presented, "hex");
   const b = Buffer.from(expected, "hex");

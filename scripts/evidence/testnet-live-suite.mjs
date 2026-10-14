@@ -28,6 +28,9 @@ const DEFAULT_FALLBACK_RPC = "https://testnet.ckb.dev/";
 // CKB_TESTNET_PRIVATE_KEY_A/B when you want isolated reviewer/faucet wallets.
 const DEFAULT_TESTNET_PRIVATE_KEY_A = "21cc3b4e32a1e9afdd51f54510c816d38bb7be37d40056854a467f4d92ebd96e";
 const DEFAULT_TESTNET_PRIVATE_KEY_B = "3fc54dc0e24080697472c447dc38557adb69fad0289d917fdbd4445c9653776b";
+// Reviewer-grade runs should never silently reuse public disposable identities.
+// Keep the low-friction demo defaults only when strict isolation is not requested.
+const requireIsolatedWallets = process.env.CELLFLOW_TESTNET_STRICT_WALLET_ISOLATION === "true";
 
 const endpoint = (process.env.CELLFLOW_URL?.trim() || DEFAULT_CELLFLOW_URL).replace(/\/$/, "");
 const apiKey = resolveCellFlowApiKey();
@@ -82,6 +85,11 @@ const startedAt = new Date().toISOString();
 await mkdir(outDir, { recursive: true });
 
 try {
+  if (requireIsolatedWallets && (!process.env.CKB_TESTNET_PRIVATE_KEY_A?.trim() ||
+      !process.env.CKB_TESTNET_PRIVATE_KEY_B?.trim() || privateKeyA === DEFAULT_TESTNET_PRIVATE_KEY_A ||
+      privateKeyB === DEFAULT_TESTNET_PRIVATE_KEY_B || privateKeyA === privateKeyB)) {
+    throw new Error("Strict reviewer Testnet proof requires two distinct fresh CKB_TESTNET_PRIVATE_KEY_A/B values; built-in public identities are not acceptable");
+  }
   await signerA.connect();
   await signerB.connect();
 

@@ -468,7 +468,12 @@ export class CkbRpcClient {
       let priorCommitCanonical: boolean | undefined;
       if (prior) {
         const canonical = await session.call<string | null>("get_block_hash", [prior.blockNumber]);
-        priorCommitCanonical = canonical?.toLowerCase() === prior.blockHash.toLowerCase();
+        // An unavailable canonical-height query is NOT evidence of a reorg.
+        // Only a real, well-formed, different hash disproves the old block.
+        const normalizedCanonical = normalizeHash(canonical);
+        if (normalizedCanonical) {
+          priorCommitCanonical = normalizedCanonical !== normalizeHash(prior.blockHash) ? false : true;
+        }
       }
 
       if (!result || !result.tx_status) {
@@ -505,15 +510,28 @@ export class CkbRpcClient {
         const canonicalBlockHash = blockNumber
           ? await session.call<string | null>("get_block_hash", [blockNumber])
           : null;
-        const currentCanonical = !blockHash || !canonicalBlockHash
-          ? undefined
-          : canonicalBlockHash.toLowerCase() === blockHash.toLowerCase();
-        if (currentCanonical === false) {
+        // Fail closed. CKB `get_transaction: committed` does not by itself
+        // prove the block remains canonical. Missing header, tip, or
+        // get_block_hash response must NOT advance to settlement-ready.
+        const normalizedBlock = normalizeHash(blockHash);
+        const normalizedCanonical = normalizeHash(canonicalBlockHash);
+        const blockHeight = blockNumber && /^0x[0-9a-f]+$/i.test(blockNumber) ? BigInt(blockNumber) : null;
+        const tipHeight = tipBlockNumber && /^0x[0-9a-f]+$/i.test(tipBlockNumber) ? BigInt(tipBlockNumber) : null;
+        const canonicalVerified = Boolean(
+          normalizedBlock && normalizedCanonical && normalizedBlock === normalizedCanonical &&
+          blockHeight !== null && tipHeight !== null && tipHeight >= blockHeight
+        );
+        if (!canonicalVerified) {
           return {
             observation: {
               status: "UNKNOWN", observedAt, rpcEndpoint: session.url,
-              raw: { txStatus: status, rpcEndpoint: session.url, blockHash, blockNumber, canonicalBlockHash, priorCommitCanonical },
-              ...(canonicalBlockHash ? { canonicalBlockHash } : {}),
+              raw: {
+                txStatus: status, rpcEndpoint: session.url, blockHash, blockNumber,
+                tipBlockNumber, canonicalBlockHash, priorCommitCanonical,
+                canonicalEvidence: normalizedCanonical && normalizedBlock && normalizedCanonical !== normalizedBlock
+                  ? "NON_CANONICAL" : "UNAVAILABLE",
+              },
+              ...(normalizedCanonical ? { canonicalBlockHash: normalizedCanonical } : {}),
               ...(priorCommitCanonical === undefined ? {} : { priorCommitCanonical }),
             },
             rpcResult: result,

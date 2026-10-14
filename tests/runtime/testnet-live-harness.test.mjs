@@ -99,7 +99,7 @@ test("live CellFlow/Vercel requests retry transport failures without retrying AP
   const client = await readFile(new URL("../../packages/ccc/src/client.ts", import.meta.url), "utf8");
   const worker = await readFile(new URL("../../scripts/evidence/testnet-live-reconcile-worker.mjs", import.meta.url), "utf8");
   assert.match(client, /transportRetryAttempts\?: number/);
-  assert.match(client, /if \(error instanceof CellFlowHttpError\) throw error/);
+  assert.match(client, /if \(error instanceof CellFlowHttpError \|\| activeSignal\?\.aborted\) throw error/);
   assert.match(client, /AbortSignal\.timeout\(requestTimeoutMs\)/);
   assert.match(suite, /CELLFLOW_HTTP_REQUEST_ATTEMPTS/);
   assert.match(suite, /transportRetryAttempts: cellFlowHttpAttempts/);
