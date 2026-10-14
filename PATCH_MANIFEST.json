@@ -1,0 +1,106 @@
+{
+  "baseline": "CellFlow-main(8).zip",
+  "date": "2026-10-14",
+  "delivery": "code patch and full repository; no live execution",
+  "changedFileCount": 18,
+  "changedFiles": [
+    {
+      "path": ".env.example",
+      "type": "new",
+      "sha256": "48ecd27d10210b681489ae5e61abb81f675e7004a622b80e147153418525efbe"
+    },
+    {
+      "path": ".env.testnet.example",
+      "type": "new",
+      "sha256": "17d23b0d57e591199dfa7c34d823285e6788f6b8cfd6cc34f97bb5d1da627b82"
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "type": "new",
+      "sha256": "57a59d895c1256b86117f862a2658a05bdc7ab0b082ca5292f7719e761cffc15"
+    },
+    {
+      "path": ".github/workflows/generate-lockfile.yml",
+      "type": "new",
+      "sha256": "531407b793e5641047582ec919ada11bb4369548c46e496265e6a1fe9123df71"
+    },
+    {
+      "path": ".github/workflows/maintenance.yml",
+      "type": "new",
+      "sha256": "6ad78d143f7879fa74176cb733879ed8fd95c6bd0714ff3e1e30c4ffe3e9c887"
+    },
+    {
+      "path": ".github/workflows/testnet-review.yml",
+      "type": "new",
+      "sha256": "e7765779bc536c68ae20cf3c414ff440094b11834991e38a7c11dc8fb479652d"
+    },
+    {
+      "path": ".gitignore",
+      "type": "new",
+      "sha256": "75367aab9f463ce8f169016585ff609226f363f4fdb894735b9fc8e679ec2eb5"
+    },
+    {
+      "path": ".nvmrc",
+      "type": "new",
+      "sha256": "f14b4987904bcb5814e4459a057ed4d20f58a633152288a761214dcd28780b56"
+    },
+    {
+      "path": "REVIEWER_CODE_UPGRADE_SETUP.md",
+      "type": "new",
+      "sha256": "404dc560b5e88d361f9055f5650982c0a1e2427fe514ef8c3ac9c0b28b6aa7b4"
+    },
+    {
+      "path": "package.json",
+      "type": "modified",
+      "sha256": "aff5865888c48b10c22788ffe8d1d5b634edc2d828e1cca28cec288e8998eb24"
+    },
+    {
+      "path": "scripts/evidence/live-safety.mjs",
+      "type": "new",
+      "sha256": "a4c70b7523d74e1d856abcdfdb31305a2f33d19141fd787093a37d5631985b5a"
+    },
+    {
+      "path": "scripts/evidence/package-review-bundle.mjs",
+      "type": "modified",
+      "sha256": "f66322ae64115b30a2608ac6906217664b1f356505667df893f66fba431f8eb8"
+    },
+    {
+      "path": "scripts/evidence/testnet-live-suite.mjs",
+      "type": "modified",
+      "sha256": "deff00e77c5b9375669af3052d8ac4750ec911b76a1d3dca849b9f8c601c819d"
+    },
+    {
+      "path": "scripts/release-preflight.mjs",
+      "type": "modified",
+      "sha256": "6dc9083cdf471975612c82df9fff328c1730e4c8ac050d963fef018f898b21af"
+    },
+    {
+      "path": "tests/integration/db-settlement.test.mjs",
+      "type": "modified",
+      "sha256": "6651252b8e102a3b073666fd83dc860571e3e19a2aca628191706bee6b6376e4"
+    },
+    {
+      "path": "tests/runtime/live-safety.test.mjs",
+      "type": "new",
+      "sha256": "970d2ea84d1874508c1319c302e9784b195d42baa86d676c6bc1d6df5f9a8e01"
+    },
+    {
+      "path": "tests/runtime/reviewer-bundle.test.mjs",
+      "type": "modified",
+      "sha256": "5432ed98491614934b6b092a103c295f2c5f104a4cb54c1e8d1ad9db2d3eebc6"
+    },
+    {
+      "path": "vercel.json",
+      "type": "modified",
+      "sha256": "58e9bcfd1bf8e46354bd3c0c589ffba6083b9acb673ff129dd8a4ccadb5553e5"
+    }
+  ],
+  "validation": {
+    "pureNodeTests": "26 passed / 0 failed",
+    "releasePreflight": "blocked only by missing authentic package-lock.json",
+    "npmInstall": "unavailable: external npm registry unreachable",
+    "PostgreSQLIntegration": "not executed",
+    "Testnet": "not executed",
+    "Vercel": "not deployed"
+  }
+}

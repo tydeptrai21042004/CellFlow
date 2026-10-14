@@ -14,10 +14,19 @@ async function exists(path) {
 function add(name, ok, severity, detail) { checks.push({ name, ok, severity, detail }); }
 
 const nodeMajor = Number(process.versions.node.split(".")[0]);
-add("node-version", nodeMajor >= 22, "blocker", `Node ${process.versions.node}; required >=22`);
+add("node-version", nodeMajor === 22, "blocker", `Node ${process.versions.node}; required >=22 <23 to match package.json engines`);
 
 const lockfile = await exists("package-lock.json");
 add("dependency-lockfile", lockfile, "blocker", lockfile ? "package-lock.json present" : "package-lock.json missing; generate and commit it before release");
+if (lockfile) {
+  try {
+    const parsed = JSON.parse(await readFile(join(root, "package-lock.json"), "utf8"));
+    add("lockfile-format", parsed.lockfileVersion >= 3 && parsed.name === "cellflow" && Boolean(parsed.packages?.[""]),
+      "blocker", "npm workspace lockfile v3, named cellflow, with root package record");
+  } catch {
+    add("lockfile-format", false, "blocker", "package-lock.json could not be parsed");
+  }
+}
 
 for (const path of [
   "packages/db/migrations/003_production_readiness.sql",
@@ -56,7 +65,9 @@ for (const path of manifests) {
 }
 add("pinned-direct-dependencies", floating.length === 0, "blocker", floating.length ? floating.join(", ") : "direct third-party versions are pinned");
 
-add("file:.github/workflows/ci.yml", await exists(".github/workflows/ci.yml"), "blocker", ".github/workflows/ci.yml");
+for (const workflow of ["ci.yml", "maintenance.yml", "testnet-review.yml", "generate-lockfile.yml"]) {
+  add(`file:.github/workflows/${workflow}`, await exists(`.github/workflows/${workflow}`), "blocker", workflow);
+}
 
 const envExampleExists = await exists(".env.example");
 add("file:.env.example", envExampleExists, "blocker", envExampleExists ? ".env.example present" : ".env.example missing");

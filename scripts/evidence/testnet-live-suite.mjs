@@ -5,6 +5,7 @@ import { createHash, createHmac } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { ccc } from "@ckb-ccc/core";
+import { assertPreBroadcastEvidence } from "./live-safety.mjs";
 import {
   CellFlowClient,
   classifyBroadcastError,
@@ -107,6 +108,14 @@ try {
   const readiness = await fetchJson(`${endpoint}/api/ready`, { headers: authHeaders() }, true);
   await saveJson("02-cellflow-readiness.json", readiness);
   if (!readiness.responseOk) throw new Error(`CellFlow readiness failed: HTTP ${readiness.status}`);
+  // Fail before funding/spending transactions when release or network identity
+  // does not match the reviewer's pinned proof target.
+  assertPreBroadcastEvidence({
+    readiness, network,
+    expectedSha: process.env.CELLFLOW_EXPECTED_RELEASE_SHA?.trim(),
+    expectedGenesis: process.env.CKB_EXPECTED_GENESIS_HASH?.trim(),
+    strict: requireIsolatedWallets,
+  });
 
   const [balanceA, balanceB] = await Promise.all([signerA.getBalance(), signerB.getBalance()]);
   const wallets = {

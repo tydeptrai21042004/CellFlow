@@ -14,6 +14,12 @@ const required = [
   "40-ambiguous-recovery.json", "90-project-evidence.json", "99-summary.json",
 ];
 const optional = ["00-testnet-preflight.json", "03-wallets.json"];
+const EXPECTED_SCENARIOS = new Map([
+  ["10-two-wallet-same-fee-race.json", "two-wallet-same-fee-application-contention"],
+  ["20-two-wallet-higher-fee-rbf.json", "two-wallet-higher-fee-rbf"],
+  ["30-wallet-input-race.json", "wallet-funding-input-conflict"],
+  ["40-ambiguous-recovery.json", "real-broadcast-injected-lost-response-recovery"],
+]);
 const SHA = /^[a-f0-9]{40}$/i;
 const SENSITIVE_KEY = /(?:private.?key|api.?key|bearer|authorization|password|secret|mnemonic|seed.?phrase|cookie|credential|database.?url|access.?token|refresh.?token|signature.?key|signing.?key|encrypted)/i;
 const SENSITIVE_VALUE = /(?:cf_live_[A-Za-z0-9_-]{20,}|whsec_[A-Za-z0-9_-]{20,}|\bBearer\s+[A-Za-z0-9._~+/-]{12,})/gi;
@@ -49,6 +55,23 @@ export function redactEvidence(value) {
   return typeof value === "string" ? redactString(value) : value;
 }
 
+// The live harness stores fetchJson() results as {responseOk, status, body}.
+// Older synthetic fixtures exported the JSON body directly. Accept both,
+// but fail closed on a non-2xx HTTP wrapper instead of trusting its body.
+export function unwrapHttpEvidence(record, label) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) throw new Error(`${label}: missing JSON object`);
+  if ("responseOk" in record || "status" in record || "body" in record) {
+    if (record.responseOk !== true || !Number.isInteger(record.status) || record.status < 200 || record.status >= 300) {
+      throw new Error(`${label}: unsuccessful recorded HTTP response`);
+    }
+    if (!record.body || typeof record.body !== "object" || Array.isArray(record.body)) {
+      throw new Error(`${label}: invalid HTTP JSON body`);
+    }
+    return record.body;
+  }
+  return record;
+}
+
 function sha256(bytes) { return createHash("sha256").update(bytes).digest("hex"); }
 function flag(name) {
   const index = process.argv.indexOf(name);
@@ -68,11 +91,28 @@ async function verify(folder) {
   const manifest = await readJson(folder, "manifest.json");
   const text = await readFile(join(folder, "SHA256SUMS"), "utf8");
   const lines = text.trim().split("\n");
+  if (!Array.isArray(manifest.artifacts) || manifest.artifacts.some(a => typeof a.file !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(a.file))) {
+    throw new Error("Invalid manifest artifacts");
+  }
+  const expectedNames = new Set(["manifest.json", "README.md", ...manifest.artifacts.map(a => a.file)]);
+  const seen = new Set();
+  if (lines.length !== expectedNames.size || manifest.artifacts.length + 2 !== expectedNames.size) {
+    throw new Error("Manifest and checksum file counts differ");
+  }
   for (const line of lines) {
     const match = line.match(/^([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._-]*)$/);
     if (!match) throw new Error(`Invalid checksum entry: ${line}`);
     const [, expected, name] = match;
+    if (!expectedNames.has(name) || seen.has(name)) throw new Error(`Unexpected/duplicate checksum entry: ${name}`);
+    seen.add(name);
     if (sha256(await readFile(join(folder, name))) !== expected) throw new Error(`Checksum mismatch: ${name}`);
+  }
+  for (const artifact of manifest.artifacts) {
+    if (!/^[0-9a-f]{64}$/.test(artifact.sha256 ?? "") ||
+        sha256(await readFile(join(folder, artifact.file))) !== artifact.sha256 ||
+        (await readFile(join(folder, artifact.file))).byteLength !== artifact.bytes) {
+      throw new Error(`Manifest artifact digest/size mismatch: ${artifact.file}`);
+    }
   }
   if (manifest.schemaVersion !== "cellflow-review-bundle-v1" || !SHA.test(manifest.releaseSha)) {
     throw new Error("Invalid bundle manifest");
@@ -89,21 +129,24 @@ async function create(source, output, expectedSha) {
     catch (error) { if (error?.code !== "ENOENT") throw error; }
   }
 
-  const readiness = documents.get("02-cellflow-readiness.json");
+  const readiness = unwrapHttpEvidence(documents.get("02-cellflow-readiness.json"), "Readiness response");
   const network = documents.get("01-network.json");
   const summary = documents.get("99-summary.json");
-  const projectExport = documents.get("90-project-evidence.json");
+  const projectExport = unwrapHttpEvidence(documents.get("90-project-evidence.json"), "Project evidence response");
   const releaseSha = assertSafeSha(readiness?.releaseSha, "Readiness response");
   if (releaseSha !== expectedSha) throw new Error(`Deployed release mismatch: observed ${releaseSha}, expected ${expectedSha}`);
   if (readiness.ok !== true) throw new Error("Readiness snapshot was not healthy");
-  if (!Array.isArray(network) || network.length < 2 || !network.every(e => e?.ok === true && e?.chain === "ckb_testnet")) {
+  if (!Array.isArray(network) || network.length < 2 || !network.every(e => e?.ok === true && e?.chain === "ckb_testnet" && typeof e.genesisHash === "string" && /^0x[0-9a-f]{64}$/i.test(e.genesisHash))) {
     throw new Error("Missing independent CKB Testnet RPC identity evidence");
+  }
+  if (new Set(network.map(e => { try { const url = new URL(e.url); return url.protocol === "https:" && !url.username && !url.password ? url.hostname.toLowerCase() : null; } catch { return null; } })).size < 2 || network.some(e => { try { const url = new URL(e.url); return url.protocol !== "https:" || Boolean(url.username || url.password); } catch { return true; } })) {
+    throw new Error("Require observations from at least two distinct CKB RPC hosts");
   }
   if (network.some(e => String(e?.genesisHash ?? "").toLowerCase() !== String(network[0]?.genesisHash ?? "").toLowerCase())) {
     throw new Error("RPC genesis mismatch across endpoints");
   }
   if (summary?.passed !== true || !Array.isArray(summary?.scenarios) ||
-      summary.scenarios.length < 4 || !summary.scenarios.every(s => s.passed === true)) {
+      summary.scenarios.length < EXPECTED_SCENARIOS.size || !summary.scenarios.every(s => s.passed === true)) {
     throw new Error("Live Testnet suite was not fully successful");
   }
   const projectRelease = projectExport?.evidence?.release?.commitSha ?? projectExport?.release?.commitSha;
@@ -112,9 +155,15 @@ async function create(source, output, expectedSha) {
   }
   const projectNetwork = projectExport?.evidence?.project?.network ?? projectExport?.project?.network;
   if (projectNetwork !== "testnet") throw new Error("Project evidence is not Testnet-scoped");
-  for (const name of required.filter(name => /^\d\d-/.test(name) && !["01-network.json", "02-cellflow-readiness.json", "90-project-evidence.json", "99-summary.json"].includes(name))) {
+  for (const [name, expectedScenario] of EXPECTED_SCENARIOS) {
     const scenario = documents.get(name);
     if (scenario?.result?.passed !== true) throw new Error(`${name} has no PASS result`);
+    if (summary.scenarios.filter(s => s.name === expectedScenario && s.passed === true).length !== 1) {
+      throw new Error(`${name} is not represented exactly once as PASS in the summary`);
+    }
+  }
+  if (summary.scenarios.some(s => typeof s.name !== "string" || s.name.length > 200)) {
+    throw new Error("Scenario name is missing or malformed");
   }
   await mkdir(output, { recursive: true, mode: 0o700 });
   const artifacts = [];
@@ -133,7 +182,7 @@ async function create(source, output, expectedSha) {
     recordedFinishedAt: summary.finishedAt ?? null,
     network: "testnet",
     genesisHash: network[0]?.genesisHash ?? null,
-    recordedScenarios: summary.scenarios,
+    recordedScenarios: redactEvidence(summary.scenarios),
     artifacts,
     limitations: [
       "Only supplied run artifacts are packaged; this command does not execute RPC or recovery tests.",
@@ -144,7 +193,7 @@ async function create(source, output, expectedSha) {
   };
   const manifestText = jsonText(manifest);
   await writeFile(join(output, "manifest.json"), manifestText, { mode: 0o600 });
-  const readme = `# CellFlow reviewer bundle\n\nDeployed SHA: \`${releaseSha}\`\nRun ID: \`${summary.runId ?? "unknown"}\`\n\n` +
+  const readme = `# CellFlow reviewer bundle\n\nDeployed SHA: \`${releaseSha}\`\nRun ID: \`${redactString(String(summary.runId ?? "unknown"))}\`\n\n` +
     `Review \`manifest.json\`, then run \`sha256sum -c SHA256SUMS\`.\n` +
     `The recorded scenarios come from the source evidence directory; no tests were run by this packager.\n` +
     `Private credentials are redacted conservatively; inspect JSON files manually before making them public.\n` +
