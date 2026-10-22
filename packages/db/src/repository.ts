@@ -182,7 +182,14 @@ export class OptimisticConcurrencyError extends Error {
 }
 
 export class CellFlowRepository {
-  constructor(private readonly sql: Sql = getSql()) {}
+  // Next.js imports API modules while collecting route metadata at build time.
+  // Do not demand DATABASE_URL during module evaluation: defer opening the SQL
+  // client until a repository operation actually needs it at request time.
+  constructor(private readonly configuredSql?: Sql) {}
+
+  private get sql(): Sql {
+    return this.configuredSql ?? getSql();
+  }
 
   async ping(): Promise<boolean> {
     const rows = await this.sql`select 1 as ok`;

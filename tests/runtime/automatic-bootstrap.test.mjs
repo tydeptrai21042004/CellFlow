@@ -55,3 +55,12 @@ test("readiness exposes safe public diagnostics and dashboard renders them", () 
   assert.match(dashboard, /INITIAL_SETUP_REQUIRED/);
   assert.match(dashboard, /Open initial setup/);
 });
+
+
+test("database connection is lazy so Next.js can build without DATABASE_URL", () => {
+  // The real DB client still enforces DATABASE_URL when a DB operation executes.
+  // Only repository construction (including lib/server.ts imports) is deferred.
+  assert.doesNotMatch(repository, /constructor\([^\n]*getSql\(/);
+  assert.match(repository, /constructor\(private readonly configuredSql\?: Sql\)/);
+  assert.match(repository, /private get sql\(\): Sql\s*\{\s*return this\.configuredSql \?\? getSql\(\)/);
+});
