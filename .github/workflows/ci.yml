@@ -1,0 +1,144 @@
+name: CellFlow CI + Real CKB Testnet
+
+# One workflow, two safety domains:
+# - All pushes and PRs run offline validation only (no signing secrets).
+# - Live spending runs only after manual dispatch on main with the protected
+#   ckb-testnet environment and a successfully completed CI job.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_live_testnet:
+        description: 'Broadcast and verify real CKB Pudge testnet transactions (requires funded wallets)'
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Typecheck, regression tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then
+            npm ci --no-audit --no-fund
+          else
+            echo '::warning::Commit an npm-generated package-lock.json for reproducible npm ci.'
+            npm install --no-audit --no-fund
+          fi
+      - name: TypeScript typecheck
+        run: npm run typecheck
+      - name: Deterministic test suite
+        run: npm test
+      - name: Build production app
+        run: npm run build
+
+  testnet:
+    name: Funded wallets / real transaction evidence
+    needs: ci
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.run_live_testnet == true }}
+    runs-on: ubuntu-latest
+    environment: ckb-testnet
+    timeout-minutes: 90
+    concurrency:
+      group: cellflow-real-testnet
+      cancel-in-progress: false
+    env:
+      CELLFLOW_TESTNET_CI: 'true'
+      CELLFLOW_TESTNET_STRICT_WALLET_ISOLATION: 'true'
+      CELLFLOW_TESTNET_REQUIRE_RBF: 'true'
+      CELLFLOW_TESTNET_RESUME_SCENARIOS: 'false'
+      CELLFLOW_LOCAL_RESUME: 'false'
+      CELLFLOW_EVIDENCE_DIR: ${{ github.workspace }}/.testnet-ci-evidence
+      CKB_NETWORK: testnet
+      CELLFLOW_URL: ${{ vars.CELLFLOW_URL || 'https://cellflow-brown.vercel.app' }}
+      CKB_RPC_URL: ${{ vars.CKB_RPC_URL || 'https://testnet.ckbapp.dev/rpc' }}
+      CKB_RPC_FALLBACK_URLS: ${{ vars.CKB_RPC_FALLBACK_URLS || 'https://testnet.ckb.dev/' }}
+      # PUBLIC faucet addresses generated for THIS project's disposable test wallets.
+      # Never paste the associated PRIVATE KEYS into YAML / Git / PRs.
+      CELLFLOW_TESTNET_ADDRESS_A: 'ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqf5wntu74dvvhydys0ekc5nmta27q7ed7g03qw8c'
+      CELLFLOW_TESTNET_ADDRESS_B: 'ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqdf72483m8lkuvgn50752jw69ny6ywagwgnzqtwj'
+      # These must identify the *actually deployed* backend and public testnet.
+      CELLFLOW_EXPECTED_RELEASE_SHA: ${{ vars.CELLFLOW_DEPLOYED_SHA }}
+      CKB_EXPECTED_GENESIS_HASH: ${{ vars.CKB_TESTNET_GENESIS_HASH }}
+      # Only the protected environment provides these secret values.
+      CKB_TESTNET_PRIVATE_KEY_A: ${{ secrets.CKB_TESTNET_PRIVATE_KEY_A }}
+      CKB_TESTNET_PRIVATE_KEY_B: ${{ secrets.CKB_TESTNET_PRIVATE_KEY_B }}
+      CELLFLOW_API_KEY: ${{ secrets.CELLFLOW_TESTNET_API_KEY }}
+    steps:
+      - name: Checkout main source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then
+            npm ci --no-audit --no-fund
+          else
+            echo '::warning::Missing npm lockfile. Commit a genuine package-lock.json.'
+            npm install --no-audit --no-fund
+          fi
+      - name: Display public deposit addresses (never private keys)
+        shell: bash
+        run: |
+          printf 'Fund Wallet A: %s\n' "$CELLFLOW_TESTNET_ADDRESS_A"
+          printf 'Fund Wallet B: %s\n' "$CELLFLOW_TESTNET_ADDRESS_B"
+          printf 'Faucet: https://faucet.nervos.org/\n'
+      - name: Validate secret formats and strict network configuration
+        run: node scripts/evidence/ci-testnet-config.mjs
+      - name: Broadcast and confirm real CKB testnet scenarios
+        run: npm run validate:testnet-live
+      - name: Redact, checksum and verify real evidence
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/evidence/package-review-bundle.mjs \
+            --source "$CELLFLOW_EVIDENCE_DIR" \
+            --out .testnet-ci-review \
+            --sha "$CELLFLOW_EXPECTED_RELEASE_SHA"
+          node scripts/evidence/package-review-bundle.mjs --verify .testnet-ci-review
+          mkdir -p "$CELLFLOW_EVIDENCE_DIR/.state"
+          printf 'verified\n' > "$CELLFLOW_EVIDENCE_DIR/.state/github-bundle-verified.ok"
+      - name: Publish safe status summary even when failing
+        if: always()
+        run: node scripts/evidence/github-testnet-summary.mjs --source .testnet-ci-evidence --out .testnet-ci-report
+      - name: Upload public status / faucet addresses
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cellflow-testnet-status-${{ github.run_id }}
+          path: .testnet-ci-report/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Upload strictly verified redacted chain evidence
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cellflow-testnet-verified-${{ github.run_id }}
+          path: .testnet-ci-review/
+          retention-days: 30
+          if-no-files-found: error
