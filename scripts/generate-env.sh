@@ -10,9 +10,8 @@ set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${CELLFLOW_ENV_OUTPUT:-$ROOT/.env.local}"
-EXAMPLE="$ROOT/.env.example"
-
-[[ -f "$EXAMPLE" ]] || { echo "ERROR: missing $EXAMPLE" >&2; exit 1; }
+# Self-contained generator: configuration comes from documented defaults and
+# operator-provided environment variables, not an optional .env.example file.
 command -v node >/dev/null 2>&1 || { echo "ERROR: Node.js 22+ is required" >&2; exit 1; }
 
 NODE_MAJOR="$(node -p 'Number(process.versions.node.split(".")[0])')"

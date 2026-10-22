@@ -49,6 +49,11 @@ export CELLFLOW_TESTNET_TIMEOUT_MS="${CELLFLOW_TESTNET_TIMEOUT_MS:-900000}"
 export CELLFLOW_TESTNET_MIN_BALANCE_CKB="${CELLFLOW_TESTNET_MIN_BALANCE_CKB:-250}"
 
 [[ "$CKB_NETWORK" == "testnet" ]] || die "This harness is Testnet-only. CKB_NETWORK must be testnet."
+# Defense-in-depth: direct CI invocations must pass the same strict validator
+# that the workflow calls before touching a wallet or Testnet CKB.
+if [[ "${CELLFLOW_TESTNET_CI:-false}" == "true" ]]; then
+  node scripts/evidence/ci-testnet-config.mjs
+fi
 if [[ -z "${CELLFLOW_API_KEY:-}" && -z "${CELLFLOW_INITIAL_ADMIN_API_KEY:-}" && -z "${CELLFLOW_BOOTSTRAP_TOKEN:-}" ]]; then die "No CellFlow credential source found. The runner can reuse CELLFLOW_INITIAL_ADMIN_API_KEY or derive the bootstrap admin key from CELLFLOW_BOOTSTRAP_TOKEN; no separate CELLFLOW_API_KEY is required."; fi
 
 STATE_DIR="${CELLFLOW_EVIDENCE_DIR:-$ROOT/evidence/testnet/live/direct}/.state"

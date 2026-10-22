@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { validateCiTestnetConfig } from '../../scripts/evidence/ci-testnet-config.mjs';
 import { writeGithubReport } from '../../scripts/evidence/github-testnet-summary.mjs';
-import { committedTxWitness } from '../../scripts/evidence/testnet-chain-witness.mjs';
+import { committedTxWitness } from '../../scripts/evidence/live-safety.mjs';
 
 const keyA = 'a'.repeat(64);
 const keyB = 'b'.repeat(64);

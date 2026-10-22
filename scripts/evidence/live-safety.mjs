@@ -38,3 +38,18 @@ export function assertPreBroadcastEvidence({ readiness, network, expectedSha, ex
   }
   return { releaseSha: body.releaseSha, genesisHash: genesis, verifiedHosts: hosts.size };
 }
+
+/**
+ * Confirm an actual get_transaction RPC observation for the exact transaction.
+ * A local CellFlow CONFIRMED status or a successful RPC envelope alone is not proof.
+ */
+export function committedTxWitness(observations, expectedHash) {
+  if (!Array.isArray(observations) || !GENESIS.test(expectedHash ?? "")) return false;
+  return observations.some((item) => {
+    const tx = item?.transaction;
+    const hash = tx?.transaction?.hash;
+    return item?.ok === true && GENESIS.test(hash ?? "") &&
+      hash.toLowerCase() === expectedHash.toLowerCase() &&
+      tx?.tx_status?.status === "committed";
+  });
+}

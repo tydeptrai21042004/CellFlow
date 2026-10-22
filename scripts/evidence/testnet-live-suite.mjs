@@ -5,8 +5,7 @@ import { createHash, createHmac } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { ccc } from "@ckb-ccc/core";
-import { assertPreBroadcastEvidence } from "./live-safety.mjs";
-import { committedTxWitness } from "./testnet-chain-witness.mjs";
+import { assertPreBroadcastEvidence, committedTxWitness } from "./live-safety.mjs";
 import {
   CellFlowClient,
   classifyBroadcastError,

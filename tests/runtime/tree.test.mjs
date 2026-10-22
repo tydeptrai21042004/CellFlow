@@ -4,8 +4,8 @@ import { access } from "node:fs/promises";
 
 const required = [
   "package.json",
-  ".env.example",
-  ".env.testnet.example",
+  // Environment templates are documentation artifacts, not runtime dependencies.
+  // Required deployment configuration is validated by the runtime/security tests.
   "vercel.json",
   "packages/core/src/state-machine.ts",
   "packages/db/migrations/001_init.sql",

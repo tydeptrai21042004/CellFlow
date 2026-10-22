@@ -45,12 +45,16 @@ test("readiness probes every configured RPC instead of mixing failover sessions"
   assert.match(source, /endpointResults\.every/);
 });
 
-test("release artifacts include environment template and Vercel-only build gate", async () => {
-  const env = await read(".env.example");
+test("release configuration supports pinned genesis, bootstrap and Vercel build gate", async () => {
+  const generator = await read("scripts/generate-env.sh");
+  const preflight = await read("scripts/evidence/testnet-preflight.mjs");
+  const server = await read("apps/web/lib/server.ts");
   const config = JSON.parse(await read("vercel.json"));
   const installer = await read("scripts/vercel-install.mjs");
-  assert.match(env, /CKB_EXPECTED_GENESIS_HASH=/);
-  assert.match(env, /CELLFLOW_BOOTSTRAP_TOKEN=/);
+  assert.match(generator, /write_env CKB_EXPECTED_GENESIS_HASH/);
+  assert.match(generator, /write_env CELLFLOW_BOOTSTRAP_TOKEN/);
+  assert.match(preflight, /process\.env\.CKB_EXPECTED_GENESIS_HASH/);
+  assert.match(server, /process\.env\.CELLFLOW_BOOTSTRAP_TOKEN/);
   assert.match(installer, /"ci"/);
   assert.equal(config.buildCommand, "npm run ci:vercel");
 });

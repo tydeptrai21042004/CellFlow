@@ -33,8 +33,12 @@ test("browser does not persist service API key in sessionStorage/localStorage", 
   assert.match(bootstrap, /CELLFLOW_BOOTSTRAP_TOKEN/);
 });
 
-test("encryption and bootstrap secrets are separate", async () => {
-  const env = await read(".env.example");
-  assert.match(env, /CELLFLOW_ENCRYPTION_KEY=/);
-  assert.match(env, /CELLFLOW_BOOTSTRAP_TOKEN=/);
+test("encryption and bootstrap secrets have independent configuration and consumers", async () => {
+  const generator = await read("scripts/generate-env.sh");
+  const webhook = await read("packages/webhooks/src/delivery.ts");
+  const auth = await read("apps/api/src/auth.ts");
+  assert.match(generator, /write_env CELLFLOW_ENCRYPTION_KEY/);
+  assert.match(generator, /write_env CELLFLOW_BOOTSTRAP_TOKEN/);
+  assert.match(webhook, /process\.env\.CELLFLOW_ENCRYPTION_KEY/);
+  assert.match(auth, /process\.env\.CELLFLOW_BOOTSTRAP_TOKEN/);
 });

@@ -5,7 +5,6 @@ import test from "node:test";
 const suite = await readFile(new URL("../../scripts/evidence/testnet-live-suite.mjs", import.meta.url), "utf8");
 const runner = await readFile(new URL("../../scripts/run-testnet-live-evidence.sh", import.meta.url), "utf8");
 const localRunner = await readFile(new URL("../../run_testnet_local_all.sh", import.meta.url), "utf8");
-const env = await readFile(new URL("../../.env.testnet.example", import.meta.url), "utf8");
 const server = await readFile(new URL("../../apps/web/lib/server.ts", import.meta.url), "utf8");
 const pkg = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
 
@@ -34,8 +33,10 @@ test("default Testnet identities and operational defaults require no duplicate s
   assert.match(suite, /DEFAULT_CELLFLOW_URL = "https:\/\/cellflow-brown\.vercel\.app"/);
   assert.match(suite, /DEFAULT_PRIMARY_RPC = "https:\/\/testnet\.ckbapp\.dev\/rpc"/);
   assert.match(suite, /DEFAULT_FALLBACK_RPC = "https:\/\/testnet\.ckb\.dev\/"/);
-  assert.match(env, /built-in,\n# public development Testnet identities|built-in,/i);
-  assert.doesNotMatch(env, /^CKB_TESTNET_PRIVATE_KEY_[AB]=[0-9a-f]{64}$/m);
+  assert.match(suite, /Public, TESTNET-ONLY development identities/);
+  assert.match(suite, /CELLFLOW_TESTNET_STRICT_WALLET_ISOLATION/);
+  assert.match(suite, /Strict reviewer Testnet proof requires two distinct fresh/);
+  assert.doesNotMatch(runner, /^\s*(?:export )?CKB_TESTNET_PRIVATE_KEY_[AB]=[0-9a-f]{64}$/m);
 });
 
 test("runner reuses bootstrap credentials instead of requiring a separate CellFlow API key", () => {
@@ -113,7 +114,7 @@ test("Testnet evidence prefers IPv4 for WSL/Undici reliability by default", asyn
   assert.match(suite, /setDefaultResultOrder\("ipv4first"\)/);
   assert.match(workerSource, /setDefaultResultOrder\("ipv4first"\)/);
   assert.match(preflight, /setDefaultResultOrder\("ipv4first"\)/);
-  assert.match(env, /CELLFLOW_TESTNET_IPV4_FIRST=true/);
+  assert.match(suite, /process\.env\.CELLFLOW_TESTNET_IPV4_FIRST \?\? "true"/);
 });
 
 

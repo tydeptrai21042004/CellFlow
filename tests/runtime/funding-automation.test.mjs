@@ -1,16 +1,48 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const read = (file) => readFile(new URL(`../../${file}`, import.meta.url), "utf8");
 
-test("funding automation includes safe env generation without wallet secrets", async () => {
-  const env = await read(".env.example");
+test("funding automation generates a private env without templates or wallet keys", async () => {
+  const root = fileURLToPath(new URL("../..", import.meta.url));
+  const dir = await mkdtemp(join(tmpdir(), "cellflow-generated-env-"));
+  const output = join(dir, ".env.local");
+  try {
+    const result = spawnSync("bash", ["scripts/generate-env.sh"], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CELLFLOW_ENV_OUTPUT: output,
+        CKB_EXPECTED_GENESIS_HASH: `0x${"1".repeat(64)}`,
+        // Ensure a standalone test, not a copy of external machine secrets.
+        CELLFLOW_ENCRYPTION_KEY: "",
+        CELLFLOW_BOOTSTRAP_TOKEN: "",
+        CRON_SECRET: "",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const env = await readFile(output, "utf8");
+    for (const key of ["CKB_EXPECTED_GENESIS_HASH", "CKB_RPC_FALLBACK_URLS", "CELLFLOW_ENCRYPTION_KEY", "CELLFLOW_BOOTSTRAP_TOKEN"]) {
+      assert.match(env, new RegExp(`^${key}='[^']*'$`, "m"));
+    }
+    for (const key of ["CELLFLOW_ENCRYPTION_KEY", "CELLFLOW_BOOTSTRAP_TOKEN", "CRON_SECRET"]) {
+      assert.match(env, new RegExp(`^${key}='[0-9a-f]{64}'$`, "m"));
+    }
+    const encryption = env.match(/^CELLFLOW_ENCRYPTION_KEY='([^']+)'$/m)?.[1];
+    const bootstrap = env.match(/^CELLFLOW_BOOTSTRAP_TOKEN='([^']+)'$/m)?.[1];
+    assert.notEqual(encryption, bootstrap, "bootstrap token and encryption key must be independent");
+    assert.doesNotMatch(env, /^CKB_TESTNET_PRIVATE_KEY_[AB]=|^MNEMONIC=|^SEED_PHRASE=/m);
+    assert.equal((await stat(output)).mode & 0o777, 0o600, "generated env must remain owner-only");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
   const generator = await read("scripts/generate-env.sh");
-  assert.match(env, /CKB_EXPECTED_GENESIS_HASH=/);
-  assert.match(env, /CKB_RPC_FALLBACK_URLS=/);
-  assert.match(env, /CELLFLOW_ENCRYPTION_KEY=/);
-  assert.doesNotMatch(env, /PRIVATE_KEY|MNEMONIC|SEED_PHRASE/i);
   assert.match(generator, /never in CellFlow \.env files/i);
   assert.match(generator, /chmod 600/);
 });
