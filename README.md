@@ -204,6 +204,14 @@ npm run dev
 
 Open `http://localhost:3000`. The collapsible first-deploy setup section accepts `CELLFLOW_BOOTSTRAP_TOKEN`; the server-only encryption key never enters the browser. The generated `cf_live_...` API key is shown once and kept only in page memory. Set `CELLFLOW_SETUP_ENABLED=false` after production provisioning.
 
+## GitHub Actions and verifiable CKB Testnet testing
+
+- `.github/workflows/ci.yml` validates pull requests and pushes **without transaction broadcasts or secrets**.
+- The `testnet` job in **that same** `.github/workflows/ci.yml` is **manual, main-branch-only** for real CKB Testnet broadcasts, commit witnesses, two-wallet conflicts, strict fee replacement and recovery evidence. It requires a protected `ckb-testnet` GitHub Environment, isolated funded Testnet wallets, a pinned deployed release SHA and a verified Testnet genesis hash.
+- The workflow uploads a **redacted, checksummed evidence bundle only after the real scenarios pass**; a safe status artifact is available on failure. A green deterministic CI run does not imply a green live Testnet run.
+
+See [GitHub Actions Testnet setup](docs/CI_TESTNET_GITHUB_ACTIONS.md) for exact secret/variable names and funding instructions.
+
 ## Production release gate
 
 This repository is a **production candidate**, not a claim of externally proven mainnet safety. Before a public production/mainnet release:

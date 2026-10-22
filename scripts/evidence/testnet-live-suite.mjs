@@ -6,6 +6,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { ccc } from "@ckb-ccc/core";
 import { assertPreBroadcastEvidence } from "./live-safety.mjs";
+import { committedTxWitness } from "./testnet-chain-witness.mjs";
 import {
   CellFlowClient,
   classifyBroadcastError,
@@ -98,6 +99,15 @@ try {
   const addressB = await signerB.getRecommendedAddress();
   if (!addressA.startsWith("ckt") || !addressB.startsWith("ckt")) {
     throw new Error("Refusing to run: both signer addresses must be CKB Testnet addresses (ckt1...)");
+  }
+  // Check the signer-derived address against the public faucet address pinned
+  // in the single GitHub Actions workflow. Do NOT broadcast to an unexpected
+  // wallet if a GitHub secret was copied from the wrong project.
+  if (process.env.CELLFLOW_TESTNET_CI === "true") {
+    if (addressA !== process.env.CELLFLOW_TESTNET_ADDRESS_A ||
+        addressB !== process.env.CELLFLOW_TESTNET_ADDRESS_B) {
+      throw new Error("Signing-key / hard-coded funding-address mismatch. Check GitHub Environment secrets A/B before funding or broadcasting.");
+    }
   }
 
   const network = await verifyRpcIdentities(rpcUrls);
@@ -292,7 +302,8 @@ async function runSameFeeApplicationRace(ctx) {
     beforeGrace: compactView(bBeforeGrace),
     afterGrace: compactView(bAfterGrace),
     winner: compactView(aFinal),
-    passed: submitB.accepted === false &&
+    committedOnChain: committedTxWitness(rpcA, hashA),
+    passed: committedTxWitness(rpcA, hashA) && submitB.accepted === false &&
       bAfterGrace?.conflictType === "INPUT_SPENT" &&
       bAfterGrace?.recommendedAction === "REBUILD_FROM_LIVE_STATE" &&
       aFinal?.status === "CONFIRMED" && aFinal?.assertionStatus === "VERIFIED",
@@ -378,7 +389,9 @@ async function runHigherFeeRbf(ctx) {
     replacement: compactView(replacementView),
     linkedReplacement,
     rbfDemonstrated: demonstratedRbf,
-    passed: strictRbf ? demonstratedRbf : (demonstratedRbf || highSubmit.accepted === false),
+    committedOnChain: committedTxWitness(rpcHigh, preparedHigh.txHash),
+    passed: committedTxWitness(rpcHigh, preparedHigh.txHash) &&
+      (strictRbf ? demonstratedRbf : (demonstratedRbf || highSubmit.accepted === false)),
   };
   await saveJson("20-two-wallet-higher-fee-rbf.json", { result, evidence, rpcLow, rpcHigh });
   return result;
@@ -427,6 +440,7 @@ async function runWalletInputRace({ signer, address }) {
     v.conflictType === "INPUT_SPENT" || v.recommendedAction === "RECOLLECT_WALLET_INPUTS",
   );
   const evidence = await persistIntentEvidence(intentB);
+  const chainObservations = await observeAcrossRpcs(hashA);
   const result = {
     name,
     startedAt: started,
@@ -437,9 +451,10 @@ async function runWalletInputRace({ signer, address }) {
     txB: preparedB.txHash,
     submitB,
     final: compactView(bFinal),
-    passed: submitB.accepted === false && bFinal?.conflictType === "INPUT_SPENT" && bFinal?.recommendedAction === "RECOLLECT_WALLET_INPUTS",
+    committedOnChain: committedTxWitness(chainObservations, hashA),
+    passed: committedTxWitness(chainObservations, hashA) && submitB.accepted === false && bFinal?.conflictType === "INPUT_SPENT" && bFinal?.recommendedAction === "RECOLLECT_WALLET_INPUTS",
   };
-  await saveJson("30-wallet-input-race.json", { result, evidence });
+  await saveJson("30-wallet-input-race.json", { result, evidence, chainObservations });
   return result;
 }
 
@@ -528,7 +543,8 @@ async function runAmbiguousRecovery({ signer, address }) {
     workerPassed: workerDoc.passed === true,
     after: compactView(after),
     fingerprintPersisted,
-    passed: before?.submissionStatus === "SUBMISSION_UNKNOWN" && workerDoc.passed === true && after?.status === "CONFIRMED" && after?.assertionStatus === "VERIFIED" && fingerprintPersisted,
+    committedOnChain: committedTxWitness(rpc, prepared.txHash),
+    passed: committedTxWitness(rpc, prepared.txHash) && before?.submissionStatus === "SUBMISSION_UNKNOWN" && workerDoc.passed === true && after?.status === "CONFIRMED" && after?.assertionStatus === "VERIFIED" && fingerprintPersisted,
   };
   await saveJson("40-ambiguous-recovery.json", { result, evidence, rpc, worker: workerDoc });
   return result;
