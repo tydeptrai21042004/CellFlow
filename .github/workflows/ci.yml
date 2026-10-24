@@ -34,22 +34,20 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Install dependencies (no database service or credentials)
+      - name: Install dependencies (offline tests; no database or .env file)
         shell: bash
         run: |
           set -euo pipefail
           if [[ -f package-lock.json ]]; then
+            # Preserve a genuine checked-in lockfile if the repository has one.
+            # A stale committed lock should fail rather than silently change versions.
             npm ci --no-audit --no-fund
           else
-            # Temporary compatibility for source ZIPs that omitted the lockfile.
-            # npm will resolve a GENUINE workspace dependency graph using its
-            # registry. The resulting lock is not reproducible ACROSS runs until
-            # the artifact is committed by the owner. Never fabricate a lock.
-            echo '::warning::No committed package-lock.json. Generate a real CI lockfile and upload it as a proposed source patch.'
-            npm install --package-lock-only --ignore-scripts --no-audit --no-fund
-            npm ci --no-audit --no-fund
-            echo 'CELLFLOW_EPHEMERAL_LOCKFILE=true' >> "$GITHUB_ENV"
-            echo '⚠️ Dependencies resolved using an uncommitted temporary lock. Commit the proposed-lockfile artifact.' >> "$GITHUB_STEP_SUMMARY"
+            # Do not generate a temporary lock then run npm ci: npm's workspace
+            # lock-only resolver can create inconsistent nested Zod 3/4 entries.
+            # A single unlocked installation is supported while no lock is committed.
+            echo '::warning::No package-lock.json. Installing dependencies directly without writing a lockfile; this is not a reproducible install.'
+            npm install --package-lock=false --no-audit --no-fund
           fi
       - name: Verify strict release preflight
         run: npm run release:check
@@ -61,14 +59,6 @@ jobs:
         run: npm run test:vercel-deployment
       - name: Build production app
         run: npm run build
-      - name: Upload generated lockfile for later commit (if absent from source)
-        if: ${{ always() && env.CELLFLOW_EPHEMERAL_LOCKFILE == 'true' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: cellflow-proposed-lockfile-${{ github.run_id }}
-          path: package-lock.json
-          retention-days: 30
-          if-no-files-found: warn
 
   testnet:
     name: Funded wallets / real transaction evidence
@@ -111,16 +101,15 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Install dependencies (no local database)
+      - name: Install dependencies (no local database or .env file)
         shell: bash
         run: |
           set -euo pipefail
           if [[ -f package-lock.json ]]; then
             npm ci --no-audit --no-fund
           else
-            echo '::warning::Using ephemeral npm lockfile. Commit the CI-proposed lockfile for reproducibility.'
-            npm install --package-lock-only --ignore-scripts --no-audit --no-fund
-            npm ci --no-audit --no-fund
+            echo '::warning::No package-lock.json. Installing without generating a temporary workspace lockfile.'
+            npm install --package-lock=false --no-audit --no-fund
           fi
       - name: Initialize safe status directories
         shell: bash
