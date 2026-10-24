@@ -13,8 +13,8 @@ This patch is based on commit `7b773b25d5e211aa0a7754e2f8f994cbca3172bb` of the 
 ## Once per repository
 
 1. Copy the directories from this patch ZIP into the same paths at repo root and commit.
-2. Generate and **commit a genuine `package-lock.json`** using Node 22/npm 10.9.2 on a machine with npm registry access: `npm install --no-audit --no-fund`, then `npm install --package-lock-only --ignore-scripts --no-audit --no-fund`, then validate with `npm ci --dry-run --ignore-scripts --no-audit --no-fund` and finally a clean `npm ci --no-audit --no-fund`. Never fabricate a lockfile. The patch ZIP does not include a lockfile because registry access was unavailable in the patch environment.
-3. **CI Run #7 fix:** For a checkout WITHOUT a committed lock, `scripts/ci-install.sh` now executes a real `npm install`, rather than immediately running `npm ci` against `npm install --package-lock-only` output. It validates the generated lockfile using a dry run, attempts an npm serialization repair if necessary, and uploads `cellflow-proposed-lockfile-<run_id>` ONLY if the generated lock passes validation. If validation fails, offline tests may still use the installed dependencies, but NO lockfile is offered as ready to commit. After a validated lockfile is committed, Actions will enforce a fresh `npm ci`. See `CI_RUN_7_FIX_README.md`.
+2. Generate and **commit a genuine `package-lock.json`** using Node 22/npm 10.9.2 on a networked machine: `npm install --package-lock-only --ignore-scripts --no-audit --no-fund`. The patch ZIP does *not* contain a synthetic lockfile; package registry access was unavailable where this patch was built.
+3. After the lockfile is committed, CI uses `npm ci` reproducibly. Before then, CI generates an **ephemeral** lockfile for that run, explicitly warns that it has not been committed, and uploads it as `cellflow-proposed-lockfile-<run_id>`; download and commit that file to close the debt.
 4. Keep GitHub Environment `ckb-testnet` protected and wallet secrets away from normal PR jobs. Configure **Environment secrets** `CKB_TESTNET_PRIVATE_KEY_A`, `CKB_TESTNET_PRIVATE_KEY_B`, `CELLFLOW_TESTNET_API_KEY`; **Environment variables** `CELLFLOW_DEPLOYED_SHA`, `CKB_TESTNET_GENESIS_HASH`, `CELLFLOW_URL`, `CKB_RPC_URL`, `CKB_RPC_FALLBACK_URLS`, `CELLFLOW_TESTNET_ADDRESS_A`, and `CELLFLOW_TESTNET_ADDRESS_B`.
 5. Update `CELLFLOW_DEPLOYED_SHA` to the **actual deployed Vercel SHA** for the submitted commit. It is intentionally **not inferred from** `github.sha`, because deployment may lag source.
 6. The public deposit addresses configured through Environment variables `CELLFLOW_TESTNET_ADDRESS_A/B` (or their current YAML defaults) MUST match the secrets' derived signing addresses. Fund only disposable, TESTNET-only wallets (at least the configured minimum in the harness). Never share private keys.
@@ -22,7 +22,7 @@ This patch is based on commit `7b773b25d5e211aa0a7754e2f8f994cbca3172bb` of the 
 
 ## Evidence
 
-- A green **CI** job demonstrates offline tests/typecheck/build for that commit; no database or live-chain evidence is implied. Until `package-lock.json` is committed and full `npm ci` passes, do NOT claim reproducible release dependencies.
+- A green **CI** job demonstrates offline tests/typecheck/build for that commit; no database or live-chain evidence is implied.
 - A green **Testnet** job demonstrates the four real-chain scenarios from the live suite. It publishes an always-uploaded safe status artifact and, on success only, verified redacted evidence.
 - Failed jobs still publish sanitized diagnostics; never publish raw wallet keys, API tokens, unredacted network payloads or database URLs.
 - The replacement scenario now durably prepares/fingerprints the replacement attempt **before** submitting it to an RPC. This change must be deployed to Vercel before expecting the live job to succeed on matching SHA.

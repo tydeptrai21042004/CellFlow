@@ -1,8 +1,37 @@
-CELLFLOW RUN #7 PATCH — FILES & SHA256
+CellFlow GitHub Actions + Vercel No-DB patch
+Based on uploaded ZIP commit 7b773b25d5e211aa0a7754e2f8f994cbca3172bb
 
-c9f84d5a6bda86eb4e9b72c8846d3f97f05c451ccb90330437636ff4bea0e0db  .github/workflows/ci.yml
-664c86bf824bd0f4114743e1a42f6b21ed06446740524d66d0d715a02db6b215  scripts/ci-install.sh
-ff7ea1a264cd9b445fe307c501c2434998b5572c58039e8cc42d463d41225eb8  tests/runtime/ci-install.test.mjs
-0e96d50500d2d2641c5669db3cd60c2dc81a09c1fe9ec9d726903e7d954a707e  package.json
-1f28b064f5bfa002fccc09aff1758423eb66760059da8cd67431dd96c769e8be  GITHUB_VERCEL_SINGLE_WORKFLOW_REVISION.md
-ad1dc7eb6e67d03ab00ac1fbc6633808a9a822f6e5444128bb1942b85d5b47c0  CI_RUN_7_FIX_README.md
+Copy these files into your existing repository ROOT preserving directories:
+
+- .github/workflows/ci.yml
+- .nvmrc
+- .gitignore
+- .env.example
+- .env.testnet.example
+- package.json
+- scripts/evidence/persisted-replacement.mjs
+- scripts/evidence/testnet-live-suite.mjs
+- scripts/evidence/github-testnet-summary.mjs
+- tests/runtime/persisted-replacement.test.mjs
+- tests/runtime/github-testnet-ci.test.mjs
+- GITHUB_VERCEL_SINGLE_WORKFLOW_REVISION.md
+
+Important: package-lock.json is NOT included because npm registry resolution was unavailable.
+The workflow will generate and upload a real lockfile as an artifact until you commit one.
+Offline tests: node --test tests/runtime/github-testnet-ci.test.mjs tests/runtime/persisted-replacement.test.mjs
+No database is started or migrated in GitHub Actions.
+Live Testnet is manual, needs protected GitHub Environment secrets and a deployed Vercel API.
+
+Checksums (SHA256):
+d195e7366861c9bbe13900ba2fd30b3264d2c707284b72ccefc69bb10c6f2989  .github/workflows/ci.yml
+f14b4987904bcb5814e4459a057ed4d20f58a633152288a761214dcd28780b56  .nvmrc
+f45bb2e213101b1ff912c37e4e6ab99802add8a6faad2dcb7b3c81eb3746e310  .gitignore
+9a017f58ff38cb52185b571aac73e466670eccd754de1a8ec5a0cdab3a18abd5  .env.example
+7e2318f5df2a1bf12fd0fb0cb0d8fa32e2f699cf2435c357a0c3e725651bac51  .env.testnet.example
+dd9e6232fba9aa0366ab7a0771683eb60939c5b57ada884aaff5f5ebae03b357  package.json
+e44b4357a8260e241c8d0e019e09b1190f14b5b07ea79465ce8a2c8ef6fcc431  scripts/evidence/persisted-replacement.mjs
+8474c1df6fd15fb7b6c88c0490e8644dfb57ef3c87bd0ef6a31147090ec6ce1e  scripts/evidence/testnet-live-suite.mjs
+9b41ad79ef9967ab6bebe916b4026c1dc0f4dd7a82c8dd42b1fb823b5723700d  scripts/evidence/github-testnet-summary.mjs
+39069170903072b116d9055565ca19c49165cb6d0c9c0f5367085ce72344cc55  tests/runtime/persisted-replacement.test.mjs
+59897e67e9ce854f08b7e515f3efd019f04168f2ae38f64c25b4ad3caf9909cf  tests/runtime/github-testnet-ci.test.mjs
+7438ee9a554ed3242d6d8e9a161a89308fc4991143db49333e4ed139c4164f8c  GITHUB_VERCEL_SINGLE_WORKFLOW_REVISION.md

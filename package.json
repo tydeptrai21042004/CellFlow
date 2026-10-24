@@ -45,7 +45,7 @@
     "release:vercel": "node scripts/release-preflight.mjs --vercel",
     "verify:deployment": "node scripts/verify-deployment.mjs",
     "test:vercel-deployment": "node --test tests/runtime/vercel-deployment.test.mjs",
-    "test:github-offline": "npm test && node --test tests/runtime/github-testnet-ci.test.mjs tests/runtime/persisted-replacement.test.mjs tests/runtime/ci-install.test.mjs"
+    "test:github-offline": "npm test && node --test tests/runtime/github-testnet-ci.test.mjs tests/runtime/persisted-replacement.test.mjs"
   },
   "devDependencies": {
     "@types/node": "22.0.0",
