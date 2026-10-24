@@ -1,35 +1,44 @@
-# CellFlow: GitHub Actions + Vercel (single workflow, no Actions database)
+# CellFlow: GitHub Actions hotfix — October 24, 2026
 
-This patch is based on commit `7b773b25d5e211aa0a7754e2f8f994cbca3172bb` of the supplied ZIP.
+This incremental patch is designed to overlay the earlier `CellFlow_Vercel_NoDB_OneWorkflow_Revision_Patch.zip` that was uploaded to the repository. It fixes GitHub Actions run #11's npm `EUSAGE` / mixed Zod 3.25.76 and 4.6.5 lockfile failure.
 
-## Infrastructure boundary
+## Change in dependency installation
 
-- **Vercel owns its existing PostgreSQL connection.** Leave `DATABASE_URL`, migrations and Vercel secrets untouched.
-- **GitHub Actions does not start PostgreSQL, migrate any DB, or receive `DATABASE_URL`.** CI tests mock/offline behavior only.
-- **Manual live Testnet Actions** call the deployed Vercel API using a dedicated test-project `CELLFLOW_TESTNET_API_KEY`. The API talks to the existing database. Never use a production project/API key to run spending tests.
-- **One `.github/workflows/ci.yml`**, with `ci` on push/PR/manual and funded `testnet` only on manually dispatched `main`, after `ci` succeeds and protected `ckb-testnet` Environment approval.
-- The live test uses **real blockchain transactions**: it requires two isolated Testnet wallets with funds and enough block confirmation time. Offline CI success is not evidence of live Testnet success.
+With no committed `package-lock.json`, **never** generate an ephemeral npm workspace lockfile using `npm install --package-lock-only` followed by `npm ci`. In this project that sequence can produce nested Zod entries that fail npm's own lockfile consistency check.
 
-## Once per repository
+The single `.github/workflows/ci.yml` now uses:
 
-1. Copy the directories from this patch ZIP into the same paths at repo root and commit.
-2. Generate and **commit a genuine `package-lock.json`** using Node 22/npm 10.9.2 on a networked machine: `npm install --package-lock-only --ignore-scripts --no-audit --no-fund`. The patch ZIP does *not* contain a synthetic lockfile; package registry access was unavailable where this patch was built.
-3. After the lockfile is committed, CI uses `npm ci` reproducibly. Before then, CI generates an **ephemeral** lockfile for that run, explicitly warns that it has not been committed, and uploads it as `cellflow-proposed-lockfile-<run_id>`; download and commit that file to close the debt.
-4. Keep GitHub Environment `ckb-testnet` protected and wallet secrets away from normal PR jobs. Configure **Environment secrets** `CKB_TESTNET_PRIVATE_KEY_A`, `CKB_TESTNET_PRIVATE_KEY_B`, `CELLFLOW_TESTNET_API_KEY`; **Environment variables** `CELLFLOW_DEPLOYED_SHA`, `CKB_TESTNET_GENESIS_HASH`, `CELLFLOW_URL`, `CKB_RPC_URL`, `CKB_RPC_FALLBACK_URLS`, `CELLFLOW_TESTNET_ADDRESS_A`, and `CELLFLOW_TESTNET_ADDRESS_B`.
-5. Update `CELLFLOW_DEPLOYED_SHA` to the **actual deployed Vercel SHA** for the submitted commit. It is intentionally **not inferred from** `github.sha`, because deployment may lag source.
-6. The public deposit addresses configured through Environment variables `CELLFLOW_TESTNET_ADDRESS_A/B` (or their current YAML defaults) MUST match the secrets' derived signing addresses. Fund only disposable, TESTNET-only wallets (at least the configured minimum in the harness). Never share private keys.
-7. In GitHub Actions choose **CellFlow CI + Real CKB Testnet** → **Run workflow** → `main` → `run_live_testnet = true`. The release/chain checks fail closed before broadcasting if SHA/genesis/wallet mismatches.
+```bash
+if [[ -f package-lock.json ]]; then
+  npm ci --no-audit --no-fund
+else
+  npm install --package-lock=false --no-audit --no-fund
+fi
+```
 
-## Evidence
+It uses this in both the offline CI job and the manually-triggered live-Testnet job. It no longer generates or uploads a proposed lockfile. **A lockfile is optional**, though without one installs are not guaranteed to be reproducible across dates.
 
-- A green **CI** job demonstrates offline tests/typecheck/build for that commit; no database or live-chain evidence is implied.
-- A green **Testnet** job demonstrates the four real-chain scenarios from the live suite. It publishes an always-uploaded safe status artifact and, on success only, verified redacted evidence.
-- Failed jobs still publish sanitized diagnostics; never publish raw wallet keys, API tokens, unredacted network payloads or database URLs.
-- The replacement scenario now durably prepares/fingerprints the replacement attempt **before** submitting it to an RPC. This change must be deployed to Vercel before expecting the live job to succeed on matching SHA.
+If you later commit a lockfile, generate and validate it in a networked development environment first; a malformed committed lockfile will correctly fail the `npm ci` branch. If the repo already has a bad lockfile, remove or repair it as a separate intentional change.
 
-## Exact remaining debt
+## No `.env` files or GitHub database
 
-- A committed lockfile is still needed until the generated artifact is committed.
-- No funded test was executed while producing the patch; a successful manual live workflow is required.
-- Full database integration tests require an isolated database. They are **intentionally not run** against your existing Vercel production database or provisioned in Actions.
-- Independent third-party CellFlow integration and actual deployed restart/reorg operational acceptance remain separate milestones.
+- `.env.example`, `.env.testnet.example` and `.env.local` are **not created or required** by the patch or release preflight.
+- `.nvmrc` and `.gitignore` are optional source-only advisory files. Security best practice is still to retain a `.gitignore` to avoid accidental secret commits.
+- The workflow never starts PostgreSQL, runs migrations, or receives `DATABASE_URL`. It keeps one workflow YAML, with two jobs: database-free CI on push/PR and manual funded Testnet after CI passes.
+- The Testnet job uses the existing deployed Vercel API, which retains its own database connection.
+- All Testnet wallet keys and API tokens remain GitHub Environment **Secrets**; public RPC addresses, expected deployment SHA, genesis hash, and wallet addresses remain Environment **Variables**. The live security gate is not bypassed.
+
+## How to apply
+
+1. Overlay the files in this ZIP at repository root **with their directories preserved**. This is an incremental patch; keep the previous patch's RBF safety and evidence helpers.
+2. Commit and push to `main`.
+3. Watch the **Offline release checks, typecheck, tests and build** job in your existing GitHub Actions workflow. You do not need to upload an env file, connect a database to GitHub, or upload a package lockfile.
+4. After offline CI succeeds and Vercel has deployed the commit, choose **Run workflow** on `main` with `run_live_testnet=true` when you want to test real funded Testnet transactions. The protected `ckb-testnet` Environment still requires its existing configured secrets and vars.
+
+## Validation performed for this patch
+
+- `node scripts/release-preflight.mjs --strict` exits successfully with no lockfile and no env templates; reports `readyForGithubOfflineCI=true`, `reproducibleDependencies=false`.
+- 31 targeted Node tests passed covering workflow invariants, fail-closed live configuration, release preflight, production-readiness and Vercel deployment contracts.
+- Workflow YAML parsed; shell and JavaScript syntax checks passed.
+
+**Not verified locally:** a complete npm dependency install, TypeScript build or funded Testnet transaction. Registry access and GitHub Environment secrets are not available in this container. The next GitHub Actions execution will provide the definitive install/build result. Do not interpret a green offline CI job as proof that live-Testnet transactions passed.

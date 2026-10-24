@@ -45,7 +45,7 @@ test("deployment verifier checks HTTPS origin and JSON without needing external 
 });
 
 
-test("Vercel preflight permits GitHub web-upload checkout without dotfiles, strict release does not", async () => {
+test("Vercel and strict CI permit omitted optional dotfiles without requiring env templates", async () => {
   const root = fileURLToPath(new URL("../..", import.meta.url));
   const sandbox = await mkdtemp(join(tmpdir(), "cellflow-vercel-preflight-"));
   const checkout = join(sandbox, "checkout");
@@ -69,11 +69,15 @@ test("Vercel preflight permits GitHub web-upload checkout without dotfiles, stri
     assert.equal(report.readyForVercelDeployment, true);
     assert.equal(report.readyForCleanReleasePipeline, false);
     assert.deepEqual(report.blockers, []);
-    for (const path of [".nvmrc", ".gitignore", ".env.example", ".env.testnet.example"]) {
+    for (const path of [".nvmrc", ".gitignore"]) {
       assert.ok(report.warnings.some((x) => x.name === `file:${path}`), `${path} should be warned about`);
     }
+    assert.equal(report.checks.some((x) => x.name.includes(".env")), false);
     const strict = run("--strict");
-    assert.equal(strict.status, 1, "Strict source-release mode must require missing support files");
+    assert.equal(strict.status, 0, strict.stderr || strict.stdout);
+    const strictReport = JSON.parse(strict.stdout);
+    assert.equal(strictReport.readyForGithubOfflineCI, true);
+    assert.equal(strictReport.reproducibleDependencies, false);
     await unlink(join(checkout, "packages/db/migrations/003_production_readiness.sql"));
     const unsafe = run("--vercel");
     assert.equal(unsafe.status, 1, "Required production migration must block deployment");

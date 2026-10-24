@@ -47,11 +47,10 @@ test("witness payload evolution is explicit opt-in for CoBuild or multisig style
   assert.match(repository, /COSIGNATURE/);
 });
 
-test("release preflight owns release-artifact support-file validation", () => {
-  // Vercel runtime CI must validate executable behavior, not fail because an
-  // optional dotfile was omitted while copying a patch. Strict release
-  // packaging is still enforced by `npm run release:check`.
-  for (const file of [".env.example", ".gitignore", ".nvmrc", "vercel.json"]) {
+test("release preflight validates runtime files without requiring env templates", () => {
+  // CI and Vercel use secure configured variables, not checked-in .env files.
+  // Optional developer dotfiles remain visible as advisory warnings only.
+  for (const file of [".gitignore", ".nvmrc", "vercel.json"]) {
     assert.match(releasePreflight, new RegExp(file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
 });

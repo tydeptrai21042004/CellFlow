@@ -127,6 +127,27 @@ test('single workflow never starts a database or receives DATABASE_URL in Action
   assert.match(yaml, /npm run test:github-offline/);
   assert.match(yaml, /npm run release:check/);
   assert.match(yaml, /CELLFLOW_URL: \$\{\{ vars\.CELLFLOW_URL/);
-  assert.match(yaml, /Upload generated lockfile for later commit/);
+  assert.doesNotMatch(yaml, /Upload generated lockfile for later commit/);
+  assert.match(yaml, /npm install --package-lock=false --no-audit --no-fund/);
   assert.match(yaml, /Publish safe status summary even when failing/);
+});
+
+
+test('missing lockfile installs with npm install directly, without an invalid temporary workspace lock', async () => {
+  const yaml = await readFile(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  assert.match(yaml, /npm install --package-lock=false --no-audit --no-fund/);
+  assert.match(yaml, /if \[\[ -f package-lock\.json \]\]; then/);
+  assert.match(yaml, /npm ci --no-audit --no-fund/);
+  assert.doesNotMatch(yaml, /npm install --package-lock-only/);
+  assert.doesNotMatch(yaml, /cellflow-proposed-lockfile/);
+  assert.doesNotMatch(yaml, /DATABASE_URL:/);
+  assert.doesNotMatch(yaml, /postgres:/);
+});
+
+test('release gate does not require env template files or a database in GitHub Actions', async () => {
+  const code = await readFile(new URL('../../scripts/release-preflight.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(code, /file:\.?env\./);
+  assert.doesNotMatch(code, /env-template:/);
+  assert.match(code, /readyForGithubOfflineCI:/);
+  assert.match(code, /dependency-lockfile/);
 });

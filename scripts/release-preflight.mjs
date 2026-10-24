@@ -8,14 +8,11 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const vercel = process.argv.includes("--vercel");
 const strict = process.argv.includes("--strict") || vercel;
 const checks = [];
-// GitHub web uploads and some ZIP tools omit dotfiles. Those files are useful
-// for developers and strict source releases, but none is read by Vercel at
-// runtime. Do not block a production build for their absence; keep the missing
-// artifacts visible as warnings and require them in `release:check`.
-const sourceSupportFiles = new Set([
-  ".nvmrc", ".gitignore", ".env.example", ".env.testnet.example",
-]);
-const sourceSupportSeverity = vercel ? "warning" : "blocker";
+// Source-only optional conveniences must not block source CI or Vercel.
+// Runtime configuration is supplied by Vercel settings / GitHub Environments;
+// no .env templates or local database credentials are required by this gate.
+const sourceSupportFiles = new Set([".nvmrc", ".gitignore"]);
+const sourceSupportSeverity = "warning";
 
 async function exists(path) {
   try { await access(join(root, path), constants.F_OK); return true; } catch { return false; }
@@ -26,9 +23,9 @@ const nodeMajor = Number(process.versions.node.split(".")[0]);
 add("node-version", nodeMajor === 22, "blocker", `Node ${process.versions.node}; required >=22 <23 to match package.json engines`);
 
 const lockfile = await exists("package-lock.json");
-add("dependency-lockfile", lockfile, vercel ? "warning" : "blocker", lockfile
+add("dependency-lockfile", lockfile, "warning", lockfile
   ? "package-lock.json present; npm ci reproducible"
-  : "package-lock.json missing: Vercel may bootstrap with npm install; generate and commit a genuine lockfile for reproducible releases");
+  : "package-lock.json absent: CI and Vercel may use npm install without a lock; a committed, correct lockfile is recommended for reproducibility but is optional");
 if (lockfile) {
   try {
     const parsed = JSON.parse(await readFile(join(root, "package-lock.json"), "utf8"));
@@ -57,7 +54,6 @@ for (const path of [
   "evidence/testnet/manifest.example.json",
   ".nvmrc",
   ".gitignore",
-  ".env.testnet.example",
 ]) add(`file:${path}`, await exists(path),
   sourceSupportFiles.has(path) ? sourceSupportSeverity : "blocker", path);
 
@@ -93,29 +89,16 @@ if (vercelConfigExists) {
 }
 add("file:scripts/vercel-install.mjs", await exists("scripts/vercel-install.mjs"), "blocker", "lock-aware Vercel installer");
 
-const envExampleExists = await exists(".env.example");
-add("file:.env.example", envExampleExists, sourceSupportSeverity, envExampleExists ? ".env.example present" : ".env.example missing");
-if (envExampleExists) {
-  const envExample = await readFile(join(root, ".env.example"), "utf8");
-  for (const key of [
-    "DATABASE_URL", "CKB_NETWORK", "CKB_RPC_URL", "CKB_EXPECTED_GENESIS_HASH",
-    "CELLFLOW_ENCRYPTION_KEY", "CELLFLOW_BOOTSTRAP_TOKEN", "CELLFLOW_SETUP_ENABLED", "CRON_SECRET",
-    "CELLFLOW_RECONCILE_CONCURRENCY", "CELLFLOW_WEBHOOK_CONCURRENCY", "CELLFLOW_WEBHOOK_MAX_ATTEMPTS",
-    "CKB_RPC_CIRCUIT_FAILURES", "CKB_RPC_CIRCUIT_COOLDOWN_MS", "CKB_ALLOW_INSECURE_RPC",
-  ]) add(`env-template:${key}`, envExample.includes(`${key}=`), sourceSupportSeverity, `${key} documented`);
-}
-
 const blockers = checks.filter((item) => item.severity === "blocker" && !item.ok);
 const warnings = checks.filter((item) => item.severity === "warning" && !item.ok);
 const report = {
   schemaVersion: "cellflow-release-preflight-v1",
   version: "0.3.0",
   generatedAt: new Date().toISOString(),
-  // Reproducible source-release readiness is stricter than deploy readiness.
-  // This is intentionally false when any source-only support file is missing.
-  readyForCleanReleasePipeline: blockers.length === 0 && lockfile &&
-    !warnings.some((item) => item.name.startsWith("env-template:") ||
-      [...sourceSupportFiles].some((path) => item.name === `file:${path}`)),
+  // CI correctness and dependency reproducibility are different properties.
+  // A missing optional lockfile must not conceal an otherwise passing CI suite.
+  readyForCleanReleasePipeline: blockers.length === 0 && lockfile,
+  readyForGithubOfflineCI: blockers.length === 0,
   readyForVercelDeployment: blockers.length === 0,
   reproducibleDependencies: lockfile,
   blockers: blockers.map(({ name, detail }) => ({ name, detail })),

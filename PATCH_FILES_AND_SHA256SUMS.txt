@@ -1,37 +1,11 @@
-CellFlow GitHub Actions + Vercel No-DB patch
-Based on uploaded ZIP commit 7b773b25d5e211aa0a7754e2f8f994cbca3172bb
+CellFlow GitHub Actions npm/Zod hotfix — incremental patch
+Apply over prior patch. No .env files, no package-lock.json, only one workflow YAML.
 
-Copy these files into your existing repository ROOT preserving directories:
-
-- .github/workflows/ci.yml
-- .nvmrc
-- .gitignore
-- .env.example
-- .env.testnet.example
-- package.json
-- scripts/evidence/persisted-replacement.mjs
-- scripts/evidence/testnet-live-suite.mjs
-- scripts/evidence/github-testnet-summary.mjs
-- tests/runtime/persisted-replacement.test.mjs
-- tests/runtime/github-testnet-ci.test.mjs
-- GITHUB_VERCEL_SINGLE_WORKFLOW_REVISION.md
-
-Important: package-lock.json is NOT included because npm registry resolution was unavailable.
-The workflow will generate and upload a real lockfile as an artifact until you commit one.
-Offline tests: node --test tests/runtime/github-testnet-ci.test.mjs tests/runtime/persisted-replacement.test.mjs
-No database is started or migrated in GitHub Actions.
-Live Testnet is manual, needs protected GitHub Environment secrets and a deployed Vercel API.
-
-Checksums (SHA256):
-d195e7366861c9bbe13900ba2fd30b3264d2c707284b72ccefc69bb10c6f2989  .github/workflows/ci.yml
-f14b4987904bcb5814e4459a057ed4d20f58a633152288a761214dcd28780b56  .nvmrc
-f45bb2e213101b1ff912c37e4e6ab99802add8a6faad2dcb7b3c81eb3746e310  .gitignore
-9a017f58ff38cb52185b571aac73e466670eccd754de1a8ec5a0cdab3a18abd5  .env.example
-7e2318f5df2a1bf12fd0fb0cb0d8fa32e2f699cf2435c357a0c3e725651bac51  .env.testnet.example
-dd9e6232fba9aa0366ab7a0771683eb60939c5b57ada884aaff5f5ebae03b357  package.json
-e44b4357a8260e241c8d0e019e09b1190f14b5b07ea79465ce8a2c8ef6fcc431  scripts/evidence/persisted-replacement.mjs
-8474c1df6fd15fb7b6c88c0490e8644dfb57ef3c87bd0ef6a31147090ec6ce1e  scripts/evidence/testnet-live-suite.mjs
-9b41ad79ef9967ab6bebe916b4026c1dc0f4dd7a82c8dd42b1fb823b5723700d  scripts/evidence/github-testnet-summary.mjs
-39069170903072b116d9055565ca19c49165cb6d0c9c0f5367085ce72344cc55  tests/runtime/persisted-replacement.test.mjs
-59897e67e9ce854f08b7e515f3efd019f04168f2ae38f64c25b4ad3caf9909cf  tests/runtime/github-testnet-ci.test.mjs
-7438ee9a554ed3242d6d8e9a161a89308fc4991143db49333e4ed139c4164f8c  GITHUB_VERCEL_SINGLE_WORKFLOW_REVISION.md
+439a3e09bc946b075d833690e5cb3490fbc078623f7d705eb7bc94d111297947  .github/workflows/ci.yml
+0bc08f956d2ee93742e507bc4e18c44236f57c64ac39cbfd253aba76cb7161d7  scripts/release-preflight.mjs
+7c1244e43823623e6f763cbbb2c0b59a85758a90f504f330cf4b00247ecf0a04  scripts/clean-release-check.sh
+7150b93dbe4463194522e1536724d9658b7f83506e278a04828b7560ed5f3fc4  tests/runtime/vercel-deployment.test.mjs
+9dfd600ff9cdde3154489da088d7bd4d9cece4ecea2bd2ae7e370b5e3966ad36  tests/runtime/ckb-rbf-candidate-hardening.test.mjs
+528cb9fb326836215cadf948d8af6e155b4aaf163c7385667821d8aab99b8847  tests/runtime/production-readiness.test.mjs
+f1e1fabcaadfe92ee7dd5c103dbd32c53efffeacd1712e7c8bf25440c1d27ed1  tests/runtime/github-testnet-ci.test.mjs
+d2f6813fed4e31d593f6b9efbafa873c4ccc74a9c7cda1f49c302ac8f68ea3e3  GITHUB_VERCEL_SINGLE_WORKFLOW_REVISION.md

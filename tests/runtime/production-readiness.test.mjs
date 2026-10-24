@@ -99,11 +99,13 @@ test("production readiness redacts details and validates network plus RPC transp
   assert.match(ready, /detailed \? \{ \.\.\.base, checks, rpc, warnings, errors \} : base/);
 });
 
-test("release preflight makes dependency reproducibility an explicit release gate", async () => {
+test("release preflight reports lockfile reproducibility without requiring it for DB-free CI", async () => {
   const script = await read("scripts/release-preflight.mjs");
   const installer = await read("scripts/vercel-install.mjs");
   const root = JSON.parse(await read("package.json"));
   assert.match(script, /dependency-lockfile/);
+  assert.match(script, /reproducibleDependencies/);
+  assert.match(script, /readyForGithubOfflineCI/);
   assert.match(script, /pinned-direct-dependencies/);
   assert.match(installer, /npm ci|"ci"/);
   assert.match(root.scripts["ci:vercel"], /release:vercel/);
