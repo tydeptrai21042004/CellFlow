@@ -34,6 +34,7 @@ export function safeReport(summary, failure, wallet, verified = false) {
     scenarios: scenarios.filter(s => typeof s.name === 'string').map(s => ({
       name: s.name.slice(0, 120), passed: s.passed === true,
     })),
+    github: { runId: process.env.GITHUB_RUN_ID ?? null, sha: process.env.GITHUB_SHA ?? null },
     notice: 'A PASS requires real Testnet broadcasts and independent on-chain confirmations, not simulated tests.',
   };
 }
@@ -50,6 +51,8 @@ export async function writeGithubReport(source, dest, summaryPath) {
   const markdown = [
     '## CellFlow real CKB Testnet', '',
     `**Result:** ${report.status}`, '',
+    ...(report.github.runId ? [`GitHub Actions run: ${report.github.runId}`] : []),
+    ...(report.github.sha ? [`GitHub commit: ${report.github.sha}`] : []), '',
     report.reason, '',
     ...Object.entries(report.wallets).map(([label, address]) =>
       `Wallet ${label}: ${address ? `\`${address}\`` : 'not observed (configure/fund isolated signer)'}`),

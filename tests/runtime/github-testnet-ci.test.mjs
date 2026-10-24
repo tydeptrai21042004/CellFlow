@@ -114,3 +114,19 @@ test('one workflow isolates safe CI on PR/push from manually dispatched strict l
   assert.match(suite, /Signing-key \/ hard-coded funding-address mismatch/);
   assert.doesNotMatch(yaml, /CKB_TESTNET_PRIVATE_KEY_A: ['"]?0x[0-9a-f]{64}/i);
 });
+
+test('single workflow never starts a database or receives DATABASE_URL in Actions', async () => {
+  const yaml = await readFile(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const { readdir } = await import('node:fs/promises');
+  const workflowFiles = (await readdir(new URL('../../.github/workflows/', import.meta.url)))
+    .filter(name => /\.ya?ml$/.test(name));
+  assert.deepEqual(workflowFiles, ['ci.yml']);
+  assert.doesNotMatch(yaml, /^\s+DATABASE_URL:/m);
+  assert.doesNotMatch(yaml, /^\s+services:\s*$/m);
+  assert.doesNotMatch(yaml, /^\s+run:.*npm run (?:migrate|test:db-integration)/m);
+  assert.match(yaml, /npm run test:github-offline/);
+  assert.match(yaml, /npm run release:check/);
+  assert.match(yaml, /CELLFLOW_URL: \$\{\{ vars\.CELLFLOW_URL/);
+  assert.match(yaml, /Upload generated lockfile for later commit/);
+  assert.match(yaml, /Publish safe status summary even when failing/);
+});

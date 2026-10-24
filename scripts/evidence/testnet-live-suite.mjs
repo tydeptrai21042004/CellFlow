@@ -6,6 +6,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { ccc } from "@ckb-ccc/core";
 import { assertPreBroadcastEvidence, committedTxWitness } from "./live-safety.mjs";
+import { submitPersistedReplacement } from "./persisted-replacement.mjs";
 import {
   CellFlowClient,
   classifyBroadcastError,
@@ -339,40 +340,47 @@ async function runHigherFeeRbf(ctx) {
   const preparedHigh = await signAndDescribe(ctx.signerB, highTx, [stateOutPoint]);
   const lowHash = await trackedLow.broadcast();
   await sleep(propagationDelayMs);
-  const highSubmit = await rawSubmit(ctx.signerB, preparedHigh.signed);
+  // Critical safety ordering: the high-fee candidate must be durable BEFORE
+  // the RPC sees it. The original and replacement attempts remain linked.
+  const highSubmit = await submitPersistedReplacement({
+    flow, intentId, candidate: preparedHigh, parentAttemptId,
+    metadata: { ...metadata, lowFeeRate: lowFeeRate.toString(), highFeeRate: highFeeRate.toString() },
+    expectedCells,
+    submit: (signed) => rawSubmit(ctx.signerB, signed),
+  });
 
   let highCommitted = null;
   let lowTerminal = null;
   let replacementView = null;
   if (highSubmit.accepted) {
     highCommitted = await waitForCommitted(preparedHigh.txHash);
-    lowTerminal = await reconcileUntil(intentId, (v) =>
-      v.conflictType === "INPUT_SPENT" || v.status === "CONFLICTED" || v.status === "REJECTED",
-    );
-    replacementView = await flow.prepare({
-      intentId,
-      txHash: preparedHigh.txHash,
-      signedPayloadHashSha256: preparedHigh.signedPayloadHashSha256,
-      inputOutPoints: preparedHigh.inputOutPoints,
-      inputRefs: preparedHigh.inputRefs,
-      attemptKind: "RBF_REPLACEMENT",
-      parentAttemptId,
-      metadata: { ...metadata, lowFeeRate: lowFeeRate.toString(), highFeeRate: highFeeRate.toString() },
-      expectedCells,
-    });
-    await flow.markSubmitted(intentId);
     replacementView = await reconcileUntil(intentId, (v) => v.status === "CONFIRMED" && v.assertionStatus === "VERIFIED");
+    // The active intent now refers to the replacement. Do not mislabel it as
+    // the original attempt's terminal state; read original status from the
+    // retained per-attempt evidence below instead.
   } else {
+    // An explicitly rejected replacement does not prove that the original
+    // can never commit; reconciliation must check both persisted attempts.
     lowTerminal = await reconcileUntil(intentId, (v) => v.status === "CONFIRMED" || v.status === "CONFLICTED");
   }
 
   const evidence = await persistIntentEvidence(intentId);
+  const originalAttempt = Array.isArray(evidence?.body?.evidence?.attempts)
+    ? evidence.body.evidence.attempts.find((attempt) =>
+        attempt?.id === parentAttemptId || attempt?.attemptId === parentAttemptId)
+    : null;
+  if (originalAttempt) lowTerminal = originalAttempt;
   const [rpcLow, rpcHigh] = await Promise.all([observeAcrossRpcs(lowHash), observeAcrossRpcs(preparedHigh.txHash)]);
   const linkedReplacement = Array.isArray(evidence?.body?.evidence?.attempts) && evidence.body.evidence.attempts.some((attempt) =>
-    attempt?.attemptKind === "RBF_REPLACEMENT" && attempt?.parentAttemptId === parentAttemptId,
+    attempt?.attemptKind === "RBF_REPLACEMENT" &&
+    attempt?.parentAttemptId === parentAttemptId &&
+    String(attempt?.txHash ?? "").toLowerCase() === preparedHigh.txHash.toLowerCase() &&
+    attempt?.signedPayloadHashSha256 === preparedHigh.signedPayloadHashSha256,
   );
 
-  const demonstratedRbf = highSubmit.accepted === true && highCommitted?.status === "committed" && linkedReplacement === true && replacementView?.status === "CONFIRMED";
+  const demonstratedRbf = highSubmit.accepted === true && highSubmit.persistedBeforeBroadcast === true &&
+    highCommitted?.status === "committed" && linkedReplacement === true &&
+    replacementView?.status === "CONFIRMED" && replacementView?.assertionStatus === "VERIFIED";
   const result = {
     name,
     startedAt: started,
@@ -384,6 +392,7 @@ async function runHigherFeeRbf(ctx) {
     lowFeeRate: lowFeeRate.toString(),
     highFeeRate: highFeeRate.toString(),
     highSubmit,
+    replacementPersistedBeforeBroadcast: highSubmit.persistedBeforeBroadcast === true,
     lowTerminal: compactView(lowTerminal),
     replacement: compactView(replacementView),
     linkedReplacement,
