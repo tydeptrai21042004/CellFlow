@@ -15,7 +15,7 @@ on:
         description: 'Broadcast and verify real CKB Pudge testnet transactions (requires funded wallets)'
         type: boolean
         required: true
-        default: false
+        default: true
 
 permissions:
   contents: read
@@ -36,8 +36,22 @@ jobs:
           node-version: '22'
       - name: Install dependencies (no database service or credentials)
         shell: bash
-        run: bash scripts/ci-install.sh
-      - name: Verify strict source-file preflight (generated lock not a committed release)
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then
+            npm ci --no-audit --no-fund
+          else
+            # Temporary compatibility for source ZIPs that omitted the lockfile.
+            # npm will resolve a GENUINE workspace dependency graph using its
+            # registry. The resulting lock is not reproducible ACROSS runs until
+            # the artifact is committed by the owner. Never fabricate a lock.
+            echo '::warning::No committed package-lock.json. Generate a real CI lockfile and upload it as a proposed source patch.'
+            npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+            npm ci --no-audit --no-fund
+            echo 'CELLFLOW_EPHEMERAL_LOCKFILE=true' >> "$GITHUB_ENV"
+            echo '⚠️ Dependencies resolved using an uncommitted temporary lock. Commit the proposed-lockfile artifact.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Verify strict release preflight
         run: npm run release:check
       - name: TypeScript typecheck
         run: npm run typecheck
@@ -48,7 +62,7 @@ jobs:
       - name: Build production app
         run: npm run build
       - name: Upload generated lockfile for later commit (if absent from source)
-        if: ${{ always() && env.CELLFLOW_VALIDATED_LOCKFILE == 'true' }}
+        if: ${{ always() && env.CELLFLOW_EPHEMERAL_LOCKFILE == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: cellflow-proposed-lockfile-${{ github.run_id }}
@@ -99,7 +113,15 @@ jobs:
           node-version: '22'
       - name: Install dependencies (no local database)
         shell: bash
-        run: bash scripts/ci-install.sh
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then
+            npm ci --no-audit --no-fund
+          else
+            echo '::warning::Using ephemeral npm lockfile. Commit the CI-proposed lockfile for reproducibility.'
+            npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+            npm ci --no-audit --no-fund
+          fi
       - name: Initialize safe status directories
         shell: bash
         run: mkdir -p .testnet-ci-evidence .testnet-ci-report
