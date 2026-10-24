@@ -1,8 +1,9 @@
 name: CellFlow CI + Real CKB Testnet
 
 # One workflow, two safety domains:
-# - All pushes and PRs run offline validation only (no signing secrets).
-# - Live spending runs only after manual dispatch on main with the protected
+# - All pushes and PRs run database-free offline validation only (no DB or signing secrets).
+# - The Vercel backend owns its existing DATABASE_URL; never migrate it from CI.
+# - Live spending uses the hosted API only after manual dispatch on main with the protected
 #   ckb-testnet environment and a successfully completed CI job.
 on:
   push:
@@ -21,8 +22,8 @@ permissions:
 
 jobs:
   ci:
-    name: Typecheck, regression tests, build
-    runs-on: ubuntu-latest
+    name: Offline release checks, typecheck, tests and build
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -33,28 +34,47 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Install dependencies
+      - name: Install dependencies (no database service or credentials)
         shell: bash
         run: |
           set -euo pipefail
           if [[ -f package-lock.json ]]; then
             npm ci --no-audit --no-fund
           else
-            echo '::warning::Commit an npm-generated package-lock.json for reproducible npm ci.'
-            npm install --no-audit --no-fund
+            # Temporary compatibility for source ZIPs that omitted the lockfile.
+            # npm will resolve a GENUINE workspace dependency graph using its
+            # registry. The resulting lock is not reproducible ACROSS runs until
+            # the artifact is committed by the owner. Never fabricate a lock.
+            echo '::warning::No committed package-lock.json. Generate a real CI lockfile and upload it as a proposed source patch.'
+            npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+            npm ci --no-audit --no-fund
+            echo 'CELLFLOW_EPHEMERAL_LOCKFILE=true' >> "$GITHUB_ENV"
+            echo '⚠️ Dependencies resolved using an uncommitted temporary lock. Commit the proposed-lockfile artifact.' >> "$GITHUB_STEP_SUMMARY"
           fi
+      - name: Verify strict release preflight
+        run: npm run release:check
       - name: TypeScript typecheck
         run: npm run typecheck
-      - name: Deterministic test suite
-        run: npm test
+      - name: Deterministic and security regressions (no database)
+        run: npm run test:github-offline
+      - name: Deployment contract regression tests
+        run: npm run test:vercel-deployment
       - name: Build production app
         run: npm run build
+      - name: Upload generated lockfile for later commit (if absent from source)
+        if: ${{ always() && env.CELLFLOW_EPHEMERAL_LOCKFILE == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cellflow-proposed-lockfile-${{ github.run_id }}
+          path: package-lock.json
+          retention-days: 30
+          if-no-files-found: warn
 
   testnet:
     name: Funded wallets / real transaction evidence
     needs: ci
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.run_live_testnet == true }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: ckb-testnet
     timeout-minutes: 90
     concurrency:
@@ -71,10 +91,10 @@ jobs:
       CELLFLOW_URL: ${{ vars.CELLFLOW_URL || 'https://cellflow-brown.vercel.app' }}
       CKB_RPC_URL: ${{ vars.CKB_RPC_URL || 'https://testnet.ckbapp.dev/rpc' }}
       CKB_RPC_FALLBACK_URLS: ${{ vars.CKB_RPC_FALLBACK_URLS || 'https://testnet.ckb.dev/' }}
-      # PUBLIC faucet addresses generated for THIS project's disposable test wallets.
-      # Never paste the associated PRIVATE KEYS into YAML / Git / PRs.
-      CELLFLOW_TESTNET_ADDRESS_A: 'ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqf5wntu74dvvhydys0ekc5nmta27q7ed7g03qw8c'
-      CELLFLOW_TESTNET_ADDRESS_B: 'ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqdf72483m8lkuvgn50752jw69ny6ywagwgnzqtwj'
+      # PUBLIC Testnet addresses. Configure Environment vars to override the
+      # defaults when rotating isolated wallet secrets. Never commit keys.
+      CELLFLOW_TESTNET_ADDRESS_A: ${{ vars.CELLFLOW_TESTNET_ADDRESS_A || 'ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqf5wntu74dvvhydys0ekc5nmta27q7ed7g03qw8c' }}
+      CELLFLOW_TESTNET_ADDRESS_B: ${{ vars.CELLFLOW_TESTNET_ADDRESS_B || 'ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqdf72483m8lkuvgn50752jw69ny6ywagwgnzqtwj' }}
       # These must identify the *actually deployed* backend and public testnet.
       CELLFLOW_EXPECTED_RELEASE_SHA: ${{ vars.CELLFLOW_DEPLOYED_SHA }}
       CKB_EXPECTED_GENESIS_HASH: ${{ vars.CKB_TESTNET_GENESIS_HASH }}
@@ -91,16 +111,20 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Install dependencies
+      - name: Install dependencies (no local database)
         shell: bash
         run: |
           set -euo pipefail
           if [[ -f package-lock.json ]]; then
             npm ci --no-audit --no-fund
           else
-            echo '::warning::Missing npm lockfile. Commit a genuine package-lock.json.'
-            npm install --no-audit --no-fund
+            echo '::warning::Using ephemeral npm lockfile. Commit the CI-proposed lockfile for reproducibility.'
+            npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+            npm ci --no-audit --no-fund
           fi
+      - name: Initialize safe status directories
+        shell: bash
+        run: mkdir -p .testnet-ci-evidence .testnet-ci-report
       - name: Display public deposit addresses (never private keys)
         shell: bash
         run: |
@@ -125,7 +149,15 @@ jobs:
           printf 'verified\n' > "$CELLFLOW_EVIDENCE_DIR/.state/github-bundle-verified.ok"
       - name: Publish safe status summary even when failing
         if: always()
-        run: node scripts/evidence/github-testnet-summary.mjs --source .testnet-ci-evidence --out .testnet-ci-report
+        shell: bash
+        run: |
+          mkdir -p .testnet-ci-report
+          if [[ -f scripts/evidence/github-testnet-summary.mjs ]]; then
+            node scripts/evidence/github-testnet-summary.mjs --source .testnet-ci-evidence --out .testnet-ci-report
+          else
+            # Checkout/bootstrap failure must not suppress a safe diagnostic artifact.
+            printf '{"status":"NOT_STARTED","reason":"Checkout or runtime files unavailable"}\n' > .testnet-ci-report/status.json
+          fi
       - name: Upload public status / faucet addresses
         if: always()
         uses: actions/upload-artifact@v4
@@ -133,7 +165,7 @@ jobs:
           name: cellflow-testnet-status-${{ github.run_id }}
           path: .testnet-ci-report/
           retention-days: 30
-          if-no-files-found: error
+          if-no-files-found: warn
       - name: Upload strictly verified redacted chain evidence
         if: success()
         uses: actions/upload-artifact@v4
