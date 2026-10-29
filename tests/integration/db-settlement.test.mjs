@@ -55,14 +55,14 @@ test('PENDING -> VERIFIED emits one settlement-ready webhook and never early', {
   await repository.applySnapshot({aggregate, snapshot, event: event('CONFIRMED','CONFIRMED'),
     assertionStatus:'PENDING', nextReconcileAt: new Date(Date.now()+12000)});
   let current = await repository.getIntent(project.id, aggregate.intent.intentId);
-  assert.equal(repository.executionPublicView(current).settlementReady, false);
+  assert.equal((await repository.executionPublicView(current)).settlementReady, false);
   let rows = await sql`select kind from state_events where intent_row_id=${aggregate.intent.id} and kind='SETTLEMENT_READY'`;
   assert.equal(rows.length, 0);
 
   await repository.applySnapshot({aggregate:current, snapshot:chainCommitted(snapshotFromExecution(current.execution)),
     event: event('ASSERTION_VERIFIED','CONFIRMED'), assertionStatus:'VERIFIED', nextReconcileAt:null});
   current = await repository.getIntent(project.id, aggregate.intent.intentId);
-  assert.equal(repository.executionPublicView(current).settlementReady, true);
+  assert.equal((await repository.executionPublicView(current)).settlementReady, true);
   assert.ok(current.execution.settlementReadyAt);
   await repository.applySnapshot({aggregate:current, snapshot:chainCommitted(snapshotFromExecution(current.execution)),
     event: event('CHAIN_OBSERVED','CONFIRMED'), assertionStatus:'VERIFIED', nextReconcileAt:null});
@@ -87,7 +87,7 @@ test('post-confirmation reorg emits settlement revocation and clears monitoring 
   await repository.applySnapshot({aggregate:current, snapshot, event:event('REORG_DETECTED','REORGED'),
     assertionStatus:null, assertionResult:null, nextReconcileAt:new Date(Date.now()+12000)});
   current = await repository.getIntent(project.id, aggregate.intent.intentId);
-  assert.equal(repository.executionPublicView(current).settlementReady, false);
+  assert.equal((await repository.executionPublicView(current)).settlementReady, false);
   assert.equal(current.execution.settlementReadyAt, null);
   const rows = await sql`select kind from state_events where intent_row_id=${aggregate.intent.id} and kind='SETTLEMENT_REVOKED'`;
   assert.equal(rows.length, 1);

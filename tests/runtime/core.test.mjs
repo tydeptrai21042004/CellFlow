@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   applyChainObservation,
+  boundedInteger,
   computeConfirmationCount,
   deriveOverallStatus,
   deriveRecommendedAction,
@@ -18,6 +19,18 @@ import {
   nextSpentObservationDetails,
   signedPayloadFingerprintSha256,
 } from "../../.tmp/core/index.js";
+
+test("bounded numeric settings use declared defaults when absent or invalid", () => {
+  // Previously Number(undefined ?? "") became 0 and maxAttempts clamped to 1.
+  assert.equal(boundedInteger(undefined, 8, 1, 20), 8);
+  assert.equal(boundedInteger("", 8, 1, 20), 8);
+  assert.equal(boundedInteger("   ", 6, 1, 12), 6);
+  assert.equal(boundedInteger("invalid", 45, 20, 300), 45);
+  assert.equal(boundedInteger("NaN", 10000, 1000, 30000), 10000);
+  assert.equal(boundedInteger("2.9", 8, 1, 20), 2);
+  assert.equal(boundedInteger("-2", 8, 1, 20), 1);
+  assert.equal(boundedInteger("999", 8, 1, 20), 20);
+});
 
 test("submission identity is persisted before broadcast", () => {
   const created = initialSnapshot({ mode: "depth", blocks: 4 });

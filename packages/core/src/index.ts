@@ -6,3 +6,4 @@ export * from "./evidence.ts";
 export * from "./validation.ts";
 export * from "./conflict-evidence.ts";
 export * from "./signed-payload.ts";
+export * from "./config.ts";

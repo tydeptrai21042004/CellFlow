@@ -1,13 +1,9 @@
 import http from "node:http";
 import https from "node:https";
+import { boundedInteger } from "@cellflow/core";
 import { CellFlowRepository, type WebhookDeliveryRecord } from "@cellflow/db";
 import { decryptSecret, signWebhook } from "./crypto.ts";
 import { validateWebhookDestination } from "./ssrf.ts";
-
-function boundedInteger(value: string | undefined, fallback: number, min: number, max: number): number {
-  const parsed = Number(value ?? "");
-  return Number.isFinite(parsed) ? Math.min(Math.max(Math.floor(parsed), min), max) : fallback;
-}
 
 export function webhookBackoffMs(attempt: number): number {
   const base = Math.min(60 * 60 * 1000, 5_000 * 2 ** Math.min(Math.max(attempt, 0), 8));

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { postSettlementMonitorMs, shouldContinueSettlementMonitoring, shouldReverifyExpectedCells } from "./monitoring.ts";
 import {
   applyChainObservation,
+  boundedInteger,
   deriveOverallStatus,
   initialSnapshot,
   setWorkflowStatus,
@@ -722,11 +723,6 @@ export async function reconcileIntent(
     }
   }
   throw new Error("Reconciliation concurrency retry exhausted");
-}
-
-function boundedInteger(value: string | undefined, fallback: number, min: number, max: number): number {
-  const parsed = Number(value ?? "");
-  return Number.isFinite(parsed) ? Math.min(Math.max(Math.floor(parsed), min), max) : fallback;
 }
 
 function reconcileConcurrency(): number {

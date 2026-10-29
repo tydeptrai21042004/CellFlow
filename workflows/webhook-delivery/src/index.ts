@@ -1,11 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { boundedInteger } from "@cellflow/core";
 import { CellFlowRepository } from "@cellflow/db";
 import { deliverWebhook } from "@cellflow/webhooks";
-
-function boundedInteger(value: string | undefined, fallback: number, min: number, max: number): number {
-  const parsed = Number(value ?? "");
-  return Number.isFinite(parsed) ? Math.min(Math.max(Math.floor(parsed), min), max) : fallback;
-}
 
 async function runWithConcurrency<T>(items: T[], concurrency: number, worker: (item: T) => Promise<void>): Promise<void> {
   let cursor = 0;
