@@ -1,8 +1,10 @@
 name: CellFlow CI + Real CKB Testnet
 
-# One workflow, two safety domains:
-# - All pushes and PRs run database-free offline validation only (no DB or signing secrets).
-# - The Vercel backend owns its existing DATABASE_URL; never migrate it from CI.
+# One workflow, four isolated safety domains:
+# - All pushes and PRs run offline checks AND ephemeral PostgreSQL integration tests.
+# - The PostgreSQL service exists only inside its GitHub-hosted CI job.
+# - Manual PostgreSQL tests use ONLY a separately protected Neon test branch.
+# - The Vercel backend owns its own Production DATABASE_URL; never migrate it from CI.
 # - Live spending uses the hosted API only after manual dispatch on main with the protected
 #   ckb-testnet environment and a successfully completed CI job.
 on:
@@ -11,11 +13,16 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      run_db_integration:
+        description: 'Run PostgreSQL migration, settlement, concurrency and webhook tests against isolated Neon branch'
+        type: boolean
+        required: true
+        default: false
       run_live_testnet:
         description: 'Broadcast and verify real CKB Pudge testnet transactions (requires funded wallets)'
         type: boolean
         required: true
-        default: true
+        default: false
 
 permissions:
   contents: read
@@ -59,6 +66,119 @@ jobs:
         run: npm run test:vercel-deployment
       - name: Build production app
         run: npm run build
+
+  db_postgres:
+    name: PostgreSQL 16 integration (automatic, ephemeral)
+    # An isolated, brand-new database on the GitHub-hosted runner for every
+    # push, PR and manual dispatch. This job receives NO production/Neon secrets.
+    needs: ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: cellflow_ci
+          POSTGRES_PASSWORD: cellflow_ci_disposable
+          POSTGRES_DB: cellflow_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cellflow_ci -d cellflow_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      # Disposable CI-only credentials; these are NOT Neon or Vercel secrets.
+      # Both URLs point to the same throwaway GitHub Postgres instance.
+      DATABASE_URL: postgresql://cellflow_ci:cellflow_ci_disposable@127.0.0.1:5432/cellflow_ci?sslmode=disable
+      DATABASE_URL_UNPOOLED: postgresql://cellflow_ci:cellflow_ci_disposable@127.0.0.1:5432/cellflow_ci?sslmode=disable
+      CELLFLOW_DB_TEST_ALLOW: 'true'
+      CELLFLOW_DB_TEST_CONFIRM_ISOLATED: github-actions-postgres-service
+      CELLFLOW_REQUIRE_DB_TESTS: 'true'
+      NODE_ENV: test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then
+            npm ci --no-audit --no-fund
+          else
+            npm install --package-lock=false --no-audit --no-fund
+          fi
+      - name: Apply migrations and run ALL PostgreSQL integration tests
+        # This command fails if the database is inaccessible or a test fails.
+        run: npm run test:db-integration
+      - name: Publish safe PostgreSQL test result
+        if: success()
+        shell: bash
+        run: |
+          echo '### CellFlow PostgreSQL 16 integration' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Backend: disposable GitHub Actions PostgreSQL service (NOT Neon/Vercel production)' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Migration + concurrency + settlement + webhook integration: PASS' >> "$GITHUB_STEP_SUMMARY"
+          echo "- Source SHA: $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+  db_integration:
+    name: Isolated Neon PostgreSQL integration proof
+    needs: ci
+    # Extra optional Neon test-branch verification; NOT production.
+    # The automatic db_postgres job does not require Neon credentials.
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.run_db_integration == true }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: cellflow-db-integration
+    concurrency:
+      group: cellflow-isolated-db-integration
+      cancel-in-progress: false
+    env:
+      # Secrets belong ONLY to the protected DB-test environment.
+      DATABASE_URL: ${{ secrets.CELLFLOW_TEST_DATABASE_URL }}
+      DATABASE_URL_UNPOOLED: ${{ secrets.CELLFLOW_TEST_DATABASE_URL_UNPOOLED }}
+      CELLFLOW_DB_TEST_EXPECTED_HOST: ${{ vars.CELLFLOW_TEST_DB_EXPECTED_HOST }}
+      CELLFLOW_PRODUCTION_DB_HOST: ${{ vars.CELLFLOW_PRODUCTION_DB_HOST }}
+      CELLFLOW_DB_TEST_ALLOW: 'true'
+      CELLFLOW_DB_TEST_CONFIRM_ISOLATED: 'isolated-neon-branch'
+      CELLFLOW_REQUIRE_DB_TESTS: 'true'
+      NODE_ENV: 'test'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies with existing lockfile when available
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then
+            npm ci --no-audit --no-fund
+          else
+            npm install --package-lock=false --no-audit --no-fund
+          fi
+      - name: Fail-closed migration and nine real-DB integration tests
+        run: npm run test:db-integration
+      - name: Publish summary without exposing database credentials
+        if: success()
+        shell: bash
+        run: |
+          echo '### CellFlow isolated Neon integration proof' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Database: protected, independently configured Neon test branch' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Schema migrations, concurrency, settlement, reorg and signed webhook tests: PASS' >> "$GITHUB_STEP_SUMMARY"
+          echo "- Source SHA: $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
 
   testnet:
     name: Funded wallets / real transaction evidence
