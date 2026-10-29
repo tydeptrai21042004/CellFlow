@@ -58,7 +58,15 @@ test("Vercel build enforces deterministic regressions while DB tests remain isol
   assert.match(root.scripts["ci:vercel"], /test:vercel-deployment/);
   assert.match(root.scripts["ci:vercel"], /typecheck/);
   assert.match(root.scripts["ci:vercel"], /npm run build/);
-  assert.match(root.scripts["test:db-integration"], /db-settlement/);
+  // The public npm script intentionally delegates to a fail-closed runner.
+  // Validate the runner rather than requiring test file names in package.json.
+  assert.match(root.scripts["test:db-integration"], /scripts\/run-db-integration\.mjs/);
+  const dbRunner = await read("scripts/run-db-integration.mjs");
+  assert.match(dbRunner, /validateDbTestEnvironment/);
+  assert.match(dbRunner, /scripts\/migrate\.mjs/);
+  assert.match(dbRunner, /tests\/integration\/db-concurrency\.test\.mjs/);
+  assert.match(dbRunner, /tests\/integration\/db-settlement\.test\.mjs/);
+  assert.match(dbRunner, /CELLFLOW_REQUIRE_DB_TESTS/);
   assert.match(root.scripts["release:check"], /--strict/);
 });
 
