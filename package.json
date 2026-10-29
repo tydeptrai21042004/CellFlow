@@ -25,7 +25,7 @@
     "release:check": "node scripts/release-preflight.mjs --strict",
     "test:ccc-classifier": "rm -rf .tmp/ccc-classifier && tsc packages/ccc/src/broadcast-errors.ts --target ES2022 --module NodeNext --moduleResolution NodeNext --outDir .tmp/ccc-classifier --strict --skipLibCheck && node --test tests/runtime/ccc-broadcast-errors.test.mjs",
     "test:rpc-integration": "node --experimental-transform-types --test tests/integration/rpc-behavior.test.mjs",
-    "test:db-integration": "node --experimental-transform-types --test tests/integration/db-concurrency.test.mjs tests/integration/db-settlement.test.mjs",
+    "test:db-integration": "node scripts/run-db-integration.mjs",
     "setup:env": "bash scripts/generate-env.sh",
     "setup:postgres": "bash scripts/setup-local-postgres.sh",
     "setup:lockfile": "bash scripts/generate-lockfile.sh",
@@ -45,7 +45,7 @@
     "release:vercel": "node scripts/release-preflight.mjs --vercel",
     "verify:deployment": "node scripts/verify-deployment.mjs",
     "test:vercel-deployment": "node --test tests/runtime/vercel-deployment.test.mjs",
-    "test:github-offline": "npm test && node --test tests/runtime/github-testnet-ci.test.mjs tests/runtime/persisted-replacement.test.mjs"
+    "test:github-offline": "npm test && node --test tests/runtime/github-testnet-ci.test.mjs tests/runtime/persisted-replacement.test.mjs tests/runtime/db-test-guard.test.mjs"
   },
   "devDependencies": {
     "@types/node": "22.0.0",

@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 
 const enabled = Boolean(process.env.DATABASE_URL);
+if (process.env.CELLFLOW_REQUIRE_DB_TESTS === 'true' && !enabled) {
+  throw new Error('DATABASE_URL is required: refusing to skip real PostgreSQL tests.');
+}
 let db = null;
 
 async function loadDb() {

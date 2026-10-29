@@ -9,6 +9,9 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import http from 'node:http';
 const enabled = Boolean(process.env.DATABASE_URL);
+if (process.env.CELLFLOW_REQUIRE_DB_TESTS === 'true' && !enabled) {
+  throw new Error('DATABASE_URL is required: refusing to skip real PostgreSQL tests.');
+}
 
 async function fixture(webhookOverride = null) {
   const { CellFlowRepository, getSql } = await import('../../packages/db/src/index.ts');

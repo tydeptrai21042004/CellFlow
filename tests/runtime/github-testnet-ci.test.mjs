@@ -115,15 +115,27 @@ test('one workflow isolates safe CI on PR/push from manually dispatched strict l
   assert.doesNotMatch(yaml, /CKB_TESTNET_PRIVATE_KEY_A: ['"]?0x[0-9a-f]{64}/i);
 });
 
-test('single workflow never starts a database or receives DATABASE_URL in Actions', async () => {
+test('single workflow keeps push/PR and funded Testnet jobs free of database secrets', async () => {
   const yaml = await readFile(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
   const { readdir } = await import('node:fs/promises');
   const workflowFiles = (await readdir(new URL('../../.github/workflows/', import.meta.url)))
     .filter(name => /\.ya?ml$/.test(name));
   assert.deepEqual(workflowFiles, ['ci.yml']);
-  assert.doesNotMatch(yaml, /^\s+DATABASE_URL:/m);
-  assert.doesNotMatch(yaml, /^\s+services:\s*$/m);
-  assert.doesNotMatch(yaml, /^\s+run:.*npm run (?:migrate|test:db-integration)/m);
+  const ciJob = yaml.split('\n  ci:\n')[1]?.split('\n  db_postgres:\n')[0];
+  const pgJob = yaml.split('\n  db_postgres:\n')[1]?.split('\n  db_integration:\n')[0];
+  const testnetJob = yaml.split('\n  testnet:\n')[1];
+  assert.ok(ciJob && pgJob && testnetJob);
+  assert.doesNotMatch(ciJob, /DATABASE_URL:/);
+  assert.doesNotMatch(testnetJob, /DATABASE_URL:/);
+  assert.match(yaml, /environment: cellflow-db-integration/);
+  assert.match(yaml, /inputs\.run_db_integration == true/);
+  assert.match(yaml, /CELLFLOW_TEST_DATABASE_URL/);
+  assert.doesNotMatch(yaml, /secrets\.DATABASE_URL/);
+  assert.match(pgJob, /^\s+services:\s*$/m);
+  assert.doesNotMatch(ciJob, /^\s+services:\s*$/m);
+  assert.doesNotMatch(testnetJob, /^\s+services:\s*$/m);
+  assert.doesNotMatch(pgJob, /\$\{\{\s*secrets\./);
+  assert.doesNotMatch(ciJob, /^\s+run:.*npm run (?:migrate|test:db-integration)/m);
   assert.match(yaml, /npm run test:github-offline/);
   assert.match(yaml, /npm run release:check/);
   assert.match(yaml, /CELLFLOW_URL: \$\{\{ vars\.CELLFLOW_URL/);
@@ -140,8 +152,24 @@ test('missing lockfile installs with npm install directly, without an invalid te
   assert.match(yaml, /npm ci --no-audit --no-fund/);
   assert.doesNotMatch(yaml, /npm install --package-lock-only/);
   assert.doesNotMatch(yaml, /cellflow-proposed-lockfile/);
-  assert.doesNotMatch(yaml, /DATABASE_URL:/);
-  assert.doesNotMatch(yaml, /postgres:/);
+  assert.match(yaml, /CELLFLOW_TEST_DATABASE_URL/);
+  assert.match(yaml, /cellflow-db-integration/);
+  assert.match(yaml, /services:\s*\n\s+postgres:\s*\n\s+image: postgres:16/);
+});
+
+test('automatic Postgres CI job uses disposable local service without Neon or production secrets', async () => {
+  const yaml = await readFile(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const job = yaml.split('\n  db_postgres:\n')[1]?.split('\n  db_integration:\n')[0];
+  assert.ok(job);
+  assert.match(job, /needs: ci/);
+  assert.match(job, /postgres:16/);
+  assert.match(job, /POSTGRES_DB: cellflow_ci/);
+  assert.match(job, /127\.0\.0\.1:5432\/cellflow_ci/);
+  assert.match(job, /CELLFLOW_DB_TEST_CONFIRM_ISOLATED: github-actions-postgres-service/);
+  assert.match(job, /npm run test:db-integration/);
+  assert.doesNotMatch(job, /\n\s+if:\s*\$\{\{ github\.event_name/);
+  assert.doesNotMatch(job, /\$\{\{\s*secrets\./);
+  assert.doesNotMatch(job, /neon\.tech|cellflow-brown\.vercel\.app/i);
 });
 
 test('release gate does not require env template files or a database in GitHub Actions', async () => {
